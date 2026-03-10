@@ -565,7 +565,7 @@ async def api_list_registry():
     return JSONResponse({"entries": entries, "total": len(entries)})
 
 
-def _load_image_as_thumb(path: Path, max_width: int = 300) -> dict | None:
+def _load_image_as_thumb(path: Path, max_width: int = 300):
     """Load an image file, return as base64 thumbnail dict."""
     if not path.exists():
         return None
@@ -601,7 +601,7 @@ def _extract_dino_name(titel: str) -> str:
     return words[0] if words else ""
 
 
-def suggest_refs_for_entry(all_entries: list, current_index: int) -> list[dict]:
+def suggest_refs_for_entry(all_entries: list, current_index: int) -> list:
     """Suggest the best reference images for a registry entry.
 
     Strategy:

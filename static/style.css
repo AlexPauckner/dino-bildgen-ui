@@ -426,9 +426,10 @@ header h1 span { color: var(--accent); }
 .suggestion-item img {
     width: 48px;
     height: 48px;
-    object-fit: cover;
+    object-fit: contain;
     border-radius: 4px;
     border: 1px solid var(--border);
+    background: var(--bg-input);
 }
 .suggestion-info {
     display: flex;

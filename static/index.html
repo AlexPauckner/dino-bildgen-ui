@@ -45,6 +45,17 @@
                 </div>
             </div>
 
+            <!-- Logline -->
+            <div class="block-card" data-block="logline">
+                <div class="block-header" onclick="toggleBlock(this)">
+                    <span class="block-title">Logline</span>
+                    <span class="block-meta" data-counter></span>
+                </div>
+                <div class="block-body">
+                    <textarea data-field="logline" oninput="updatePreview()" placeholder="Kurze Szenen-Beschreibung: Was passiert? Was ist der Moment?" style="min-height:60px"></textarea>
+                </div>
+            </div>
+
             <!-- Child Character Block -->
             <div class="block-card" data-block="child_char_block">
                 <div class="block-header" onclick="toggleBlock(this)">
@@ -59,7 +70,7 @@
             <!-- Scene Block (the big one) -->
             <div class="block-card scene" data-block="scene_block">
                 <div class="block-header" onclick="toggleBlock(this)">
-                    <span class="block-title">Scene / Charakter / Posen</span>
+                    <span class="block-title">Scene / Composition</span>
                     <span class="block-meta" data-counter></span>
                 </div>
                 <div class="block-body">
@@ -139,6 +150,17 @@
             </div>
             <div class="panel-section-body" style="max-height:180px">
                 <div id="suggestionsContainer" style="display:none"></div>
+            </div>
+        </div>
+
+        <!-- Output Directory -->
+        <div class="panel-section">
+            <div class="panel-section-header">
+                <span>Output-Ordner</span>
+                <button class="btn btn-secondary btn-small" onclick="openOutputDir()">Im Finder</button>
+            </div>
+            <div class="dir-input">
+                <input type="text" id="outputDirInput" value="~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/NB2-Neue-Arten" onchange="changeOutputDir(this.value)">
             </div>
         </div>
 

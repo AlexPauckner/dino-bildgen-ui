@@ -1,7 +1,7 @@
 // Dino-Bildgen-UI — Frontend Logic
 
 const FIELDS = [
-    'style_header', 'child_char_block', 'scene_block',
+    'style_header', 'logline', 'child_char_block', 'scene_block',
     'brush_guide', 'medium_block', 'negative_block', 'ref_instruction'
 ];
 
@@ -97,27 +97,12 @@ function getBlocks() {
 }
 
 function buildPrompt(blocks) {
+    // Reihenfolge: Style → Logline → Character → Scene/Composition → Brush → Medium → Negative
     const parts = [];
     if (blocks.style_header) parts.push(blocks.style_header);
-
-    if (blocks.scene_block) {
-        let scene = blocks.scene_block;
-        // Insert child_char_block if not already in scene
-        if (blocks.child_char_block && !scene.includes(blocks.child_char_block)) {
-            const lines = scene.split('\n');
-            const insertIdx = lines.findIndex(l => l.includes('CHARACTER SHEET'));
-            if (insertIdx >= 0) {
-                lines.splice(insertIdx + 1, 0, '', blocks.child_char_block);
-            } else {
-                lines.splice(1, 0, '', blocks.child_char_block);
-            }
-            scene = lines.join('\n');
-        }
-        parts.push(scene);
-    } else if (blocks.child_char_block) {
-        parts.push(blocks.child_char_block);
-    }
-
+    if (blocks.logline) parts.push(blocks.logline);
+    if (blocks.child_char_block) parts.push(blocks.child_char_block);
+    if (blocks.scene_block) parts.push(blocks.scene_block);
     if (blocks.brush_guide) parts.push(blocks.brush_guide);
     if (blocks.medium_block) parts.push(blocks.medium_block);
     if (blocks.negative_block) parts.push(blocks.negative_block);
@@ -156,18 +141,29 @@ function togglePreview() {
 }
 
 
-// --- Active Ref Paths (used for generation) ---
-let activeRefPaths = [];
+// --- Active Refs (used for generation) ---
+let activeRefs = []; // [{name, path, data_url, size_kb, reason?, score?}]
+let activeRefsLabel = 'Refs';
 
+function getActiveRefPaths() {
+    return activeRefs.map(r => r.path);
+}
 
-function renderActiveRefs(refs, label = 'Refs') {
+function renderActiveRefs(refs, label) {
+    if (label) activeRefsLabel = label;
+    activeRefs = refs || activeRefs;
     const grid = document.getElementById('refGrid');
-    const header = `<div style="grid-column:1/-1;font-size:10px;color:var(--green);margin-bottom:2px">${label} (${refs.length})</div>`;
-    grid.innerHTML = header + refs.map((img, i) => {
+    if (activeRefs.length === 0) {
+        grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:16px;color:var(--text-dim);font-size:12px">Keine Referenzbilder</div>';
+        return;
+    }
+    const header = `<div style="grid-column:1/-1;font-size:10px;color:var(--green);margin-bottom:2px">${activeRefsLabel} (${activeRefs.length})</div>`;
+    grid.innerHTML = header + activeRefs.map((img, i) => {
         const reason = img.reason ? `<span class="ref-reason">${img.reason}</span>` : '';
+        const src = img.data_url || `/api/registry/image/${img.registry_index}`;
         return `
-            <div class="ref-thumb active-ref" title="${img.name}${img.reason ? ' — ' + img.reason : ''} (${img.size_kb} KB)">
-                <img src="${img.data_url}" alt="${img.name}" onclick="showLightbox(this.src)">
+            <div class="ref-thumb active-ref" title="${img.name}${img.reason ? ' — ' + img.reason : ''} (${img.size_kb || '?'} KB)">
+                <img src="${src}" alt="${img.name}" onclick="showLightbox(this.src)">
                 <button class="ref-delete" onclick="removeActiveRef(${i})">&times;</button>
                 <span class="ref-name">${img.name}</span>
                 ${reason}
@@ -177,48 +173,51 @@ function renderActiveRefs(refs, label = 'Refs') {
 }
 
 function removeActiveRef(index) {
-    activeRefPaths.splice(index, 1);
-    // Re-fetch to update display
+    activeRefs.splice(index, 1);
+    renderActiveRefs();
+    syncRefPaths();
+    toast(`Ref entfernt (${activeRefs.length} übrig)`, 'info');
+}
+
+function syncRefPaths() {
     fetch('/api/refs/set-paths', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths: activeRefPaths }),
+        body: JSON.stringify({ paths: getActiveRefPaths() }),
     });
-    // Remove from grid visually
-    const grid = document.getElementById('refGrid');
-    const thumbs = grid.querySelectorAll('.active-ref');
-    if (thumbs[index]) thumbs[index].remove();
-    // Update count in header
-    const header = grid.querySelector('div');
-    if (header) {
-        const count = grid.querySelectorAll('.active-ref').length;
-        header.textContent = `Refs (${count})`;
-    }
-    toast(`Ref entfernt (${activeRefPaths.length} übrig)`, 'info');
 }
 
 async function addRefFromSuggestion(registryIndex) {
     try {
-        const resp = await fetch(`/api/registry/image/${registryIndex}`);
-        if (!resp.ok) return;
-        // Get path from the suggestions data
         const sugEl = document.querySelector(`[data-sug-index="${registryIndex}"]`);
-        if (sugEl) {
-            const path = sugEl.dataset.path;
-            if (path && !activeRefPaths.includes(path)) {
-                activeRefPaths.push(path);
-                // Reload refs display
-                await fetch('/api/refs/set-paths', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ paths: activeRefPaths }),
-                });
-                sugEl.classList.add('ref-added');
-                toast(`Ref hinzugefügt (${activeRefPaths.length} total)`, 'success');
-            } else {
-                toast('Bereits als Ref aktiv', 'info');
-            }
+        if (!sugEl) return;
+
+        const path = sugEl.dataset.path;
+        if (!path) return;
+
+        // Already active?
+        if (activeRefs.some(r => r.path === path)) {
+            toast('Bereits als Ref aktiv', 'info');
+            return;
         }
+
+        // Get suggestion info
+        const titel = sugEl.querySelector('.suggestion-title')?.textContent || path.split('/').pop();
+        const reason = sugEl.querySelector('.suggestion-reason')?.textContent || '';
+
+        // Add to active refs
+        activeRefs.push({
+            name: path.split('/').pop(),
+            path: path,
+            data_url: `/api/registry/image/${registryIndex}`,
+            registry_index: registryIndex,
+            reason: reason,
+        });
+
+        renderActiveRefs();
+        syncRefPaths();
+        sugEl.classList.add('ref-added');
+        toast(`Ref hinzugefügt: ${titel} (${activeRefs.length} total)`, 'success');
     } catch (e) {
         console.error('Ref hinzufügen fehlgeschlagen:', e);
     }
@@ -230,7 +229,7 @@ function renderRefSuggestions(suggestions) {
     if (!container || !section) return;
 
     // Show only suggestions that aren't already active refs
-    const activeNames = new Set(activeRefPaths.map(p => p.split('/').pop()));
+    const activeNames = new Set(activeRefs.map(r => r.name || r.path?.split('/').pop()));
 
     container.innerHTML = suggestions.map(sug => {
         const fileName = sug.datei.split('/').pop();
@@ -289,9 +288,24 @@ async function uploadRefs(files) {
     for (const file of files) {
         const formData = new FormData();
         formData.append('file', file);
-        await fetch('/api/refs/upload', { method: 'POST', body: formData });
+        const resp = await fetch('/api/refs/upload', { method: 'POST', body: formData });
+        const data = await resp.json();
+        if (data.ok) {
+            // Add uploaded file to active refs with preview
+            const reader = new FileReader();
+            reader.onload = () => {
+                activeRefs.push({
+                    name: file.name,
+                    path: `${document.getElementById('refDirInput').value}/${file.name}`,
+                    data_url: reader.result,
+                    size_kb: Math.round(file.size / 1024),
+                });
+                renderActiveRefs();
+                syncRefPaths();
+            };
+            reader.readAsDataURL(file);
+        }
     }
-    loadRefs();
     toast(`${files.length} Bild(er) hinzugefügt`, 'success');
 }
 
@@ -299,7 +313,22 @@ async function changeRefDir(dir) {
     const formData = new FormData();
     formData.append('dir', dir);
     await fetch('/api/refs/dir', { method: 'POST', body: formData });
+    activeRefs = [];
     loadRefs();
+}
+
+
+// --- Output Dir ---
+
+async function changeOutputDir(dir) {
+    const formData = new FormData();
+    formData.append('dir', dir);
+    await fetch('/api/output/dir', { method: 'POST', body: formData });
+    toast('Output-Ordner: ' + dir, 'info');
+}
+
+async function openOutputDir() {
+    await fetch('/api/output/open', { method: 'POST' });
 }
 
 
@@ -332,7 +361,7 @@ async function generate() {
                 temperature: parseFloat(document.getElementById('temperature').value),
                 variants: parseInt(document.getElementById('variants').value),
                 output_name: document.getElementById('outputName').value,
-                ref_paths: activeRefPaths.length > 0 ? activeRefPaths : undefined,
+                ref_paths: activeRefs.length > 0 ? getActiveRefPaths() : undefined,
             }),
         });
 
@@ -540,16 +569,14 @@ async function loadFromRegistry(index) {
         }
 
         // Show ref images — explicit from registry or suggested
-        activeRefPaths = [];
+        activeRefs = [];
 
         if (data.ref_images && data.ref_images.length > 0) {
-            // Explicit refs from registry
-            activeRefPaths = data.ref_images.map(r => r.path);
-            renderActiveRefs(data.ref_images, 'Registry-Refs');
+            activeRefs = data.ref_images;
+            renderActiveRefs(activeRefs, 'Registry-Refs');
         } else if (data.suggested_refs && data.suggested_refs.length > 0) {
-            // Auto-suggested refs
-            activeRefPaths = data.suggested_refs.map(r => r.path);
-            renderActiveRefs(data.suggested_refs, 'Vorgeschlagen');
+            activeRefs = data.suggested_refs;
+            renderActiveRefs(activeRefs, 'Vorgeschlagen');
         }
 
         // Show suggestions panel for adding more
@@ -564,18 +591,20 @@ async function loadFromRegistry(index) {
             document.getElementById('refDirInput').value = 'Intelligente Auswahl (aus Registry)';
         }
 
+        // Update output dir display
+        if (data.output_dir) {
+            document.getElementById('outputDirInput').value = data.output_dir;
+        }
+
         // Tell backend about our ref paths
-        await fetch('/api/refs/set-paths', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ paths: activeRefPaths }),
-        });
+        syncRefPaths();
 
         // Set source info in header
         document.title = `Dino Bildgen — ${data.titel}`;
 
         showBlocks();
         updatePreview();
+        autoSave();
         toast(`Registry geladen: ${data.titel} (${data.sektion})`, 'success');
     } catch (e) {
         toast('Registry-Fehler: ' + e.message, 'error');
@@ -595,8 +624,74 @@ function checkHashRoute() {
 window.addEventListener('hashchange', checkHashRoute);
 
 
+// --- Auto-Save (localStorage) ---
+
+function autoSave() {
+    const data = {
+        blocks: getBlocks(),
+        outputName: document.getElementById('outputName').value,
+        temperature: document.getElementById('temperature').value,
+        variants: document.getElementById('variants').value,
+        refDir: document.getElementById('refDirInput').value,
+        outputDir: document.getElementById('outputDirInput').value,
+        activeRefs: activeRefs,
+        timestamp: Date.now(),
+    };
+    localStorage.setItem('dino-bildgen-autosave', JSON.stringify(data));
+}
+
+function autoRestore() {
+    const raw = localStorage.getItem('dino-bildgen-autosave');
+    if (!raw) return false;
+    try {
+        const data = JSON.parse(raw);
+        // Only restore if less than 4 hours old
+        if (Date.now() - data.timestamp > 4 * 60 * 60 * 1000) return false;
+
+        for (const field of FIELDS) {
+            const ta = document.querySelector(`textarea[data-field="${field}"]`);
+            if (ta && data.blocks[field]) {
+                ta.value = data.blocks[field];
+                autoResize(ta);
+            }
+        }
+        if (data.outputName) document.getElementById('outputName').value = data.outputName;
+        if (data.temperature) {
+            document.getElementById('temperature').value = data.temperature;
+            document.getElementById('tempValue').textContent = data.temperature;
+        }
+        if (data.variants) document.getElementById('variants').value = data.variants;
+        if (data.refDir) document.getElementById('refDirInput').value = data.refDir;
+        if (data.outputDir) document.getElementById('outputDirInput').value = data.outputDir;
+        if (data.activeRefs && data.activeRefs.length > 0) {
+            activeRefs = data.activeRefs;
+            renderActiveRefs();
+            syncRefPaths();
+        }
+
+        showBlocks();
+        updatePreview();
+        const age = Math.round((Date.now() - data.timestamp) / 60000);
+        toast(`Auto-Save wiederhergestellt (${age} Min alt)`, 'success');
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// Save on every edit
+document.addEventListener('input', () => autoSave());
+
+
 // --- Init ---
 
 loadRefs();
 updatePreview();
-checkHashRoute();
+
+// Registry hash has priority, otherwise restore auto-save
+const hash = window.location.hash;
+if (hash.startsWith('#registry:')) {
+    checkHashRoute();
+} else {
+    autoRestore();
+}

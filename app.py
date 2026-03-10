@@ -117,6 +117,7 @@ def parse_script(source: str) -> dict:
 
     result = {
         "style_header": blocks.get("STYLE_HEADER", ""),
+        "logline": "",
         "child_char_block": blocks.get("CHILD_CHAR_BLOCK", blocks.get("BABY_CHAR_BLOCK", "")),
         "scene_block": scene_block,
         "brush_guide": blocks.get("BRUSH_GUIDE", ""),
@@ -149,6 +150,7 @@ def split_prompt_into_blocks(prompt: str) -> dict:
     """
     blocks = {
         "style_header": "",
+        "logline": "",
         "child_char_block": "",
         "scene_block": "",
         "brush_guide": "",
@@ -167,11 +169,18 @@ def split_prompt_into_blocks(prompt: str) -> dict:
         if re.match(r'^Oil paint', stripped, re.IGNORECASE) and not block_lines["style_header"]:
             current_block = "style_header"
             block_lines[current_block].append(line)
+        elif re.match(r'^SCENE:', stripped) and not block_lines["logline"]:
+            current_block = "logline"
+            block_lines[current_block].append(line)
         elif re.match(r'^Child proportions', stripped, re.IGNORECASE) and not block_lines["child_char_block"]:
             current_block = "child_char_block"
             block_lines[current_block].append(line)
-        elif re.match(r'^Brush stroke guide', stripped, re.IGNORECASE):
-            current_block = "brush_guide"
+        elif re.match(r'^(COMPOSITION|EMOTION|LIGHTING|FORMAT|Brush stroke)', stripped, re.IGNORECASE) and current_block != "brush_guide":
+            # These are scene/composition sub-sections
+            if re.match(r'^Brush stroke guide', stripped, re.IGNORECASE):
+                current_block = "brush_guide"
+            else:
+                current_block = "scene_block"
             block_lines[current_block].append(line)
         elif re.match(r'^Medium:', stripped, re.IGNORECASE):
             current_block = "medium_block"
@@ -179,13 +188,11 @@ def split_prompt_into_blocks(prompt: str) -> dict:
         elif re.match(r'^No photorealism', stripped, re.IGNORECASE):
             current_block = "negative_block"
             block_lines[current_block].append(line)
-        elif stripped == '' and current_block in ("style_header", "child_char_block", "medium_block", "negative_block"):
+        elif stripped == '' and current_block in ("style_header", "logline", "child_char_block", "medium_block", "negative_block"):
             # Empty line after a single-paragraph block → back to scene
             current_block = "scene_block"
             block_lines[current_block].append(line)
         elif stripped == '' and current_block == "brush_guide":
-            # Empty line after brush guide → check if next lines are still bullet points
-            # For now, end the brush guide block
             current_block = "scene_block"
             block_lines[current_block].append(line)
         elif current_block is not None:
@@ -201,39 +208,15 @@ def split_prompt_into_blocks(prompt: str) -> dict:
 
 
 def build_prompt(blocks: dict) -> str:
-    """Assemble the full prompt from blocks."""
+    """Assemble the full prompt from blocks.
+
+    Order: Style → Logline → Character → Scene/Composition → Brush → Medium → Negative
+    """
     parts = []
-    if blocks.get("style_header"):
-        parts.append(blocks["style_header"])
-    if blocks.get("scene_block"):
-        # Scene block contains CHARACTER SHEET header + char block placeholder
-        scene = blocks["scene_block"]
-        # Insert child_char_block after first paragraph if it's not already there
-        if blocks.get("child_char_block") and blocks["child_char_block"] not in scene:
-            # Find a good insertion point — after "CHARACTER SHEET" line
-            lines = scene.split("\n")
-            inserted = False
-            new_lines = []
-            for line in lines:
-                new_lines.append(line)
-                if "CHARACTER SHEET" in line and not inserted:
-                    new_lines.append("")
-                    new_lines.append(blocks["child_char_block"])
-                    inserted = True
-            if not inserted:
-                new_lines.insert(1, "")
-                new_lines.insert(2, blocks["child_char_block"])
-            scene = "\n".join(new_lines)
-        parts.append(scene)
-    else:
-        if blocks.get("child_char_block"):
-            parts.append(blocks["child_char_block"])
-    if blocks.get("brush_guide"):
-        parts.append(blocks["brush_guide"])
-    if blocks.get("medium_block"):
-        parts.append(blocks["medium_block"])
-    if blocks.get("negative_block"):
-        parts.append(blocks["negative_block"])
+    for key in ["style_header", "logline", "child_char_block", "scene_block",
+                "brush_guide", "medium_block", "negative_block"]:
+        if blocks.get(key):
+            parts.append(blocks[key])
     return "\n\n".join(parts)
 
 
@@ -398,6 +381,12 @@ async def api_generate(request: Request):
                     suffix = f"_v{i+1}" if variants > 1 else ""
                     filename = f"{output_name}{suffix}.{ext}"
                     out_path = output_dir / filename
+                    # Never overwrite — auto-increment
+                    counter = 2
+                    while out_path.exists():
+                        filename = f"{output_name}{suffix}_{counter}.{ext}"
+                        out_path = output_dir / filename
+                        counter += 1
                     out_path.write_bytes(part.inline_data.data)
 
                     img_b64 = base64.b64encode(part.inline_data.data).decode()
@@ -427,12 +416,37 @@ async def api_generate(request: Request):
         if i < variants - 1:
             time.sleep(16)
 
+    # Add generated images to registry + rebuild HTML
+    for result_item in results:
+        if "error" in result_item:
+            continue
+        for part_item in result_item.get("parts", []):
+            if part_item.get("type") == "image":
+                _add_to_registry(
+                    datei=part_item["saved_to"],
+                    titel=output_name,
+                    prompt=prompt_text,
+                    ref_paths=ref_file_paths if ref_file_paths else [],
+                    temperature=temperature,
+                    refs_count=len(ref_images),
+                )
+    _rebuild_html()
+
     return JSONResponse({
         "ok": True,
         "results": results,
         "output_dir": str(output_dir),
         "refs_used": len(ref_images),
     })
+
+
+@app.post("/api/output/open")
+async def api_open_output():
+    """Open the output directory in Finder."""
+    output_dir = Path(state["output_dir"])
+    if output_dir.exists():
+        subprocess.Popen(["open", str(output_dir)])
+    return JSONResponse({"ok": True, "dir": str(output_dir)})
 
 
 @app.get("/api/output/images")
@@ -461,6 +475,65 @@ async def api_get_output_image(filename: str):
     if not path.exists():
         return JSONResponse({"error": "Nicht gefunden"}, status_code=404)
     return FileResponse(path)
+
+
+import json as json_mod
+import subprocess
+
+
+def _add_to_registry(datei: str, titel: str, prompt: str,
+                     ref_paths: list, temperature: float, refs_count: int):
+    """Add a generated image to look-registry.json."""
+    try:
+        data = json_mod.loads(REGISTRY_PATH.read_text())
+    except Exception:
+        return
+
+    # Make path relative to DINO_BUCH_DIR
+    datei_path = Path(datei)
+    try:
+        rel = datei_path.relative_to(DINO_BUCH_DIR)
+    except ValueError:
+        rel = datei_path.name
+
+    # Make ref paths relative to KINDERBUCH_BASE
+    rel_refs = []
+    for rp in ref_paths:
+        rp = Path(rp)
+        try:
+            rel_refs.append(str(rp.relative_to(KINDERBUCH_BASE)))
+        except ValueError:
+            rel_refs.append(rp.name)
+
+    from datetime import date
+    entry = {
+        "datei": str(rel),
+        "titel": titel,
+        "sektion": "Bildgen-UI",
+        "tool": "Bildgen-UI",
+        "modell": "gemini-3.1-flash-image-preview",
+        "prompt": prompt,
+        "parameter": f"{refs_count} Refs, temp {temperature}",
+        "bewertung": "",
+        "session": str(date.today()),
+        "notiz": f"Via Bildgen-UI generiert",
+        "referenzbilder": rel_refs,
+    }
+    data["bilder"].append(entry)
+    REGISTRY_PATH.write_text(json_mod.dumps(data, ensure_ascii=False, indent=2))
+
+
+def _rebuild_html():
+    """Run build script to regenerate the HTML gallery."""
+    try:
+        subprocess.Popen(
+            ["python3", str(DINO_BUCH_DIR / "build-look-vergleich.py")],
+            cwd=str(DINO_BUCH_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
 
 REGISTRY_PATH = Path(os.path.expanduser(
@@ -649,6 +722,11 @@ async def api_load_registry(index: int):
     # Determine output dir from the image path
     output_dir = str(img_path.parent) if img_path.exists() else str(DEFAULT_OUTPUT_DIR)
     output_name = img_path.stem if img_path.exists() else "generated"
+
+    # Update server state with registry entry's dirs
+    state["output_dir"] = output_dir
+    if ref_dir_resolved:
+        state["ref_dir"] = ref_dir_resolved
 
     return JSONResponse({
         "index": index,

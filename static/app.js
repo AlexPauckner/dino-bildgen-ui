@@ -392,17 +392,26 @@ async function loadFromRegistry(index) {
             return;
         }
 
-        // The prompt from the registry is a single string — put it all in scene_block
-        const sceneTA = document.querySelector('textarea[data-field="scene_block"]');
-        if (sceneTA) {
-            sceneTA.value = data.prompt;
-            autoResize(sceneTA);
-        }
-
-        // Clear other blocks (registry prompts are monolithic)
-        for (const field of ['style_header', 'child_char_block', 'brush_guide', 'medium_block', 'negative_block']) {
-            const ta = document.querySelector(`textarea[data-field="${field}"]`);
-            if (ta) { ta.value = ''; autoResize(ta); }
+        // Use server-side split blocks if available, else fallback to monolithic
+        if (data.blocks) {
+            for (const field of FIELDS) {
+                if (field === 'ref_instruction') continue;
+                const ta = document.querySelector(`textarea[data-field="${field}"]`);
+                if (ta) {
+                    ta.value = data.blocks[field] || '';
+                    autoResize(ta);
+                }
+            }
+        } else {
+            const sceneTA = document.querySelector('textarea[data-field="scene_block"]');
+            if (sceneTA) {
+                sceneTA.value = data.prompt;
+                autoResize(sceneTA);
+            }
+            for (const field of ['style_header', 'child_char_block', 'brush_guide', 'medium_block', 'negative_block']) {
+                const ta = document.querySelector(`textarea[data-field="${field}"]`);
+                if (ta) { ta.value = ''; autoResize(ta); }
+            }
         }
 
         // Set output name
@@ -430,7 +439,7 @@ async function loadFromRegistry(index) {
             `;
         }
 
-        // Show ref images from the registry entry
+        // Show ref images from the registry entry (or fallback defaults)
         if (data.ref_images && data.ref_images.length > 0) {
             const grid = document.getElementById('refGrid');
             grid.innerHTML = data.ref_images.map(img => `
@@ -439,16 +448,14 @@ async function loadFromRegistry(index) {
                     <span class="ref-name">${img.name}</span>
                 </div>
             `).join('');
+        }
 
-            // Update ref dir to parent of first ref
-            if (data.ref_paths && data.ref_paths.length > 0) {
-                const refDir = data.ref_paths[0].substring(0, data.ref_paths[0].lastIndexOf('/'));
-                document.getElementById('refDirInput').value = refDir;
-                // Tell backend about the ref dir
-                const formData = new FormData();
-                formData.append('dir', refDir);
-                await fetch('/api/refs/dir', { method: 'POST', body: formData });
-            }
+        // Update ref dir
+        if (data.ref_dir) {
+            document.getElementById('refDirInput').value = data.ref_dir;
+            const formData = new FormData();
+            formData.append('dir', data.ref_dir);
+            await fetch('/api/refs/dir', { method: 'POST', body: formData });
         }
 
         // Set source info in header

@@ -135,6 +135,70 @@ def parse_script(source: str) -> dict:
     return result
 
 
+def split_prompt_into_blocks(prompt: str) -> dict:
+    """Intelligently split a monolithic prompt into named blocks.
+
+    Recognizes known patterns by scanning line-by-line:
+    - Style header: "Oil painted..." opening section
+    - Child char block: "Child proportions..." section
+    - Brush guide: "Brush stroke guide..." section (multi-line with - bullets)
+    - Medium block: "Medium: oil..." line
+    - Negative block: "No photorealism..." line
+    - Everything else: scene_block
+    """
+    blocks = {
+        "style_header": "",
+        "child_char_block": "",
+        "scene_block": "",
+        "brush_guide": "",
+        "medium_block": "",
+        "negative_block": "",
+    }
+
+    lines = prompt.strip().split('\n')
+    current_block = None  # which block we're appending to
+    block_lines = {k: [] for k in blocks}
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Detect block starts
+        if re.match(r'^Oil paint', stripped, re.IGNORECASE) and not block_lines["style_header"]:
+            current_block = "style_header"
+            block_lines[current_block].append(line)
+        elif re.match(r'^Child proportions', stripped, re.IGNORECASE) and not block_lines["child_char_block"]:
+            current_block = "child_char_block"
+            block_lines[current_block].append(line)
+        elif re.match(r'^Brush stroke guide', stripped, re.IGNORECASE):
+            current_block = "brush_guide"
+            block_lines[current_block].append(line)
+        elif re.match(r'^Medium:', stripped, re.IGNORECASE):
+            current_block = "medium_block"
+            block_lines[current_block].append(line)
+        elif re.match(r'^No photorealism', stripped, re.IGNORECASE):
+            current_block = "negative_block"
+            block_lines[current_block].append(line)
+        elif stripped == '' and current_block in ("style_header", "child_char_block", "medium_block", "negative_block"):
+            # Empty line after a single-paragraph block → back to scene
+            current_block = "scene_block"
+            block_lines[current_block].append(line)
+        elif stripped == '' and current_block == "brush_guide":
+            # Empty line after brush guide → check if next lines are still bullet points
+            # For now, end the brush guide block
+            current_block = "scene_block"
+            block_lines[current_block].append(line)
+        elif current_block is not None:
+            block_lines[current_block].append(line)
+        else:
+            block_lines["scene_block"].append(line)
+
+    # Join lines back into strings, strip leading/trailing whitespace
+    for key in blocks:
+        blocks[key] = '\n'.join(block_lines[key]).strip()
+
+    return blocks
+
+
 def build_prompt(blocks: dict) -> str:
     """Assemble the full prompt from blocks."""
     parts = []
@@ -421,6 +485,9 @@ async def api_load_registry(index: int):
     prompt = entry.get("prompt", "")
     refs = entry.get("referenzbilder", [])
 
+    # Split the monolithic prompt into named blocks
+    blocks = split_prompt_into_blocks(prompt)
+
     # Load the original image as base64 for preview
     original_image = None
     img_path = DINO_BUCH_DIR / entry.get("datei", "")
@@ -436,11 +503,14 @@ async def api_load_registry(index: int):
     # Resolve ref image paths and load them
     # Refs in the registry use paths relative to Comic_Projekt_2025/
     ref_images = []
+    ref_dir_resolved = None
     for ref_path_str in refs:
         ref_path = KINDERBUCH_BASE / ref_path_str
         if not ref_path.exists():
             ref_path = DINO_BUCH_DIR / ref_path_str
         if ref_path.exists():
+            if not ref_dir_resolved:
+                ref_dir_resolved = str(ref_path.parent)
             ref_data = ref_path.read_bytes()
             mime = "image/png" if ref_path.suffix.lower() == ".png" else "image/jpeg"
             ref_images.append({
@@ -449,6 +519,20 @@ async def api_load_registry(index: int):
                 "size_kb": len(ref_data) // 1024,
                 "data_url": f"data:{mime};base64,{base64.b64encode(ref_data).decode()}",
             })
+
+    # Fallback: if no refs in registry, use default ref dir
+    if not ref_images and DEFAULT_REF_DIR.exists():
+        ref_dir_resolved = str(DEFAULT_REF_DIR)
+        for ref_file in sorted(DEFAULT_REF_DIR.glob("*")):
+            if ref_file.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+                ref_data = ref_file.read_bytes()
+                mime = "image/png" if ref_file.suffix.lower() == ".png" else "image/jpeg"
+                ref_images.append({
+                    "name": ref_file.name,
+                    "path": str(ref_file),
+                    "size_kb": len(ref_data) // 1024,
+                    "data_url": f"data:{mime};base64,{base64.b64encode(ref_data).decode()}",
+                })
 
     # Determine output dir from the image path
     output_dir = str(img_path.parent) if img_path.exists() else str(DEFAULT_OUTPUT_DIR)
@@ -463,9 +547,10 @@ async def api_load_registry(index: int):
         "bewertung": entry.get("bewertung", ""),
         "notiz": entry.get("notiz", ""),
         "prompt": prompt,
+        "blocks": blocks,
         "original_image": original_image,
         "ref_images": ref_images,
-        "ref_paths": [str(KINDERBUCH_BASE / r) if (KINDERBUCH_BASE / r).exists() else str(DINO_BUCH_DIR / r) for r in refs],
+        "ref_dir": ref_dir_resolved or str(DEFAULT_REF_DIR),
         "output_dir": output_dir,
         "output_name": output_name,
         "temperature": 1.0,

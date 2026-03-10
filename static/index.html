@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dino Bildgen UI</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+    <h1><span>🦕</span> Dino Bildgen UI</h1>
+    <div class="header-actions">
+        <div class="file-input-wrapper">
+            <button class="btn btn-secondary btn-small">Script laden</button>
+            <input type="file" id="scriptFile" accept=".py">
+        </div>
+        <button class="btn btn-secondary btn-small" onclick="resetBlocks()">Neu</button>
+    </div>
+</header>
+
+<div class="app-layout">
+    <!-- Left: Editor -->
+    <div class="editor-panel" id="editorPanel">
+        <div id="emptyState" class="empty-state">
+            <p>Lade ein Python-Script oder starte mit leeren Blöcken.</p>
+            <div class="file-input-wrapper">
+                <button class="btn btn-primary">Script öffnen (.py)</button>
+                <input type="file" accept=".py" onchange="document.getElementById('scriptFile').files = this.files; loadScript()">
+            </div>
+            <p style="margin-top: 16px">
+                <button class="btn btn-secondary" onclick="resetBlocks()">Leere Blöcke starten</button>
+            </p>
+        </div>
+
+        <div id="blocksContainer" style="display:none">
+            <!-- Style Header -->
+            <div class="block-card" data-block="style_header">
+                <div class="block-header" onclick="toggleBlock(this)">
+                    <span class="block-title">Style Header</span>
+                    <span class="block-meta" data-counter></span>
+                </div>
+                <div class="block-body">
+                    <textarea data-field="style_header" oninput="updatePreview()" placeholder="Stil-Beschreibung (Ölmalerei, Impasto...)"></textarea>
+                </div>
+            </div>
+
+            <!-- Child Character Block -->
+            <div class="block-card" data-block="child_char_block">
+                <div class="block-header" onclick="toggleBlock(this)">
+                    <span class="block-title">Character Block</span>
+                    <span class="block-meta" data-counter></span>
+                </div>
+                <div class="block-body">
+                    <textarea data-field="child_char_block" oninput="updatePreview()" placeholder="Proportionen, Alter, Charakter-Beschreibung..."></textarea>
+                </div>
+            </div>
+
+            <!-- Scene Block (the big one) -->
+            <div class="block-card scene" data-block="scene_block">
+                <div class="block-header" onclick="toggleBlock(this)">
+                    <span class="block-title">Scene / Charakter / Posen</span>
+                    <span class="block-meta" data-counter></span>
+                </div>
+                <div class="block-body">
+                    <textarea data-field="scene_block" oninput="updatePreview()" placeholder="CHARACTER SHEET — ...&#10;Dino-Beschreibung, Farben, 4 Views..."></textarea>
+                </div>
+            </div>
+
+            <!-- Brush Guide -->
+            <div class="block-card" data-block="brush_guide">
+                <div class="block-header" onclick="toggleBlock(this)">
+                    <span class="block-title">Brush Guide</span>
+                    <span class="block-meta" data-counter></span>
+                </div>
+                <div class="block-body">
+                    <textarea data-field="brush_guide" oninput="updatePreview()" placeholder="Pinselstrich-Anweisungen..."></textarea>
+                </div>
+            </div>
+
+            <!-- Medium Block -->
+            <div class="block-card" data-block="medium_block">
+                <div class="block-header" onclick="toggleBlock(this)">
+                    <span class="block-title">Medium</span>
+                    <span class="block-meta" data-counter></span>
+                </div>
+                <div class="block-body">
+                    <textarea data-field="medium_block" oninput="updatePreview()" placeholder="Medium: oil paint on thick canvas..."></textarea>
+                </div>
+            </div>
+
+            <!-- Negative Block -->
+            <div class="block-card" data-block="negative_block">
+                <div class="block-header" onclick="toggleBlock(this)">
+                    <span class="block-title">Negative Prompt</span>
+                    <span class="block-meta" data-counter></span>
+                </div>
+                <div class="block-body">
+                    <textarea data-field="negative_block" oninput="updatePreview()" placeholder="No photorealism, no plastic shine..."></textarea>
+                </div>
+            </div>
+
+            <!-- Ref Instruction (collapsible) -->
+            <div class="block-card" data-block="ref_instruction">
+                <div class="block-header" onclick="toggleBlock(this)">
+                    <span class="block-title">Ref Instruction</span>
+                    <span class="block-meta" data-counter></span>
+                </div>
+                <div class="block-body" style="display:none">
+                    <textarea data-field="ref_instruction" oninput="updatePreview()" placeholder="Use these images as STYLE REFERENCE..."></textarea>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right: Refs + Results -->
+    <div class="right-panel">
+        <!-- Reference Images -->
+        <div class="panel-section">
+            <div class="panel-section-header">
+                <span>Referenzbilder</span>
+                <div class="file-input-wrapper">
+                    <button class="btn btn-secondary btn-small">+</button>
+                    <input type="file" accept="image/*" multiple onchange="uploadRefs(this.files)">
+                </div>
+            </div>
+            <div class="dir-input">
+                <input type="text" id="refDirInput" value="/tmp/dino-neue-refs" onchange="changeRefDir(this.value)">
+            </div>
+            <div class="panel-section-body" id="refsContainer">
+                <div class="ref-grid" id="refGrid"></div>
+            </div>
+        </div>
+
+        <!-- Generated Results -->
+        <div class="panel-section" style="flex:1; display:flex; flex-direction:column;">
+            <div class="panel-section-header">
+                <span>Ergebnisse</span>
+                <button class="btn btn-secondary btn-small" onclick="loadOutputImages()">Refresh</button>
+            </div>
+            <div class="panel-section-body results" id="resultsContainer">
+                <!-- Results appear here -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Bottom Bar -->
+<div class="bottom-bar">
+    <div class="prompt-preview-toggle" onclick="togglePreview()">
+        <span>Prompt Preview (<span id="totalChars">0</span> Zeichen)</span>
+        <span id="previewArrow">▼</span>
+    </div>
+    <div class="prompt-preview" id="promptPreview"></div>
+
+    <div class="generate-row">
+        <input type="text" id="outputName" value="charsheet-generated" placeholder="Dateiname">
+
+        <label>Temp</label>
+        <input type="range" id="temperature" min="0" max="2" step="0.1" value="1.0" oninput="document.getElementById('tempValue').textContent = this.value">
+        <span id="tempValue" style="font-size:12px; color:var(--text-dim); min-width:24px">1.0</span>
+
+        <label>Varianten</label>
+        <input type="number" id="variants" min="1" max="5" value="1">
+
+        <button class="btn btn-primary" id="generateBtn" onclick="generate()">Generate</button>
+    </div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" style="display:none" onclick="this.style.display='none'">
+    <img id="lightboxImg" src="">
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

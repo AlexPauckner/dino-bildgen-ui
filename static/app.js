@@ -1,0 +1,386 @@
+// Dino-Bildgen-UI — Frontend Logic
+
+const FIELDS = [
+    'style_header', 'child_char_block', 'scene_block',
+    'brush_guide', 'medium_block', 'negative_block', 'ref_instruction'
+];
+
+// --- Script Loading ---
+
+document.getElementById('scriptFile').addEventListener('change', loadScript);
+
+async function loadScript() {
+    const input = document.getElementById('scriptFile');
+    if (!input.files.length) return;
+
+    const formData = new FormData();
+    formData.append('file', input.files[0]);
+
+    try {
+        const resp = await fetch('/api/parse-script', { method: 'POST', body: formData });
+        const data = await resp.json();
+
+        // Fill blocks
+        for (const field of FIELDS) {
+            const ta = document.querySelector(`textarea[data-field="${field}"]`);
+            if (ta && data[field]) {
+                ta.value = data[field];
+                autoResize(ta);
+            }
+        }
+
+        // Update dirs
+        if (data.ref_dir) {
+            document.getElementById('refDirInput').value = data.ref_dir;
+        }
+        if (data.output_dir) {
+            // Update output name based on loaded script
+            const name = input.files[0].name.replace('.py', '').replace('generate_', 'charsheet-');
+            document.getElementById('outputName').value = name;
+        }
+        if (data.temperature !== undefined) {
+            document.getElementById('temperature').value = data.temperature;
+            document.getElementById('tempValue').textContent = data.temperature;
+        }
+        if (data.variants) {
+            document.getElementById('variants').value = data.variants;
+        }
+
+        showBlocks();
+        updatePreview();
+        loadRefs();
+        toast('Script geladen: ' + input.files[0].name, 'success');
+    } catch (e) {
+        toast('Fehler beim Parsen: ' + e.message, 'error');
+    }
+}
+
+
+function resetBlocks() {
+    for (const field of FIELDS) {
+        const ta = document.querySelector(`textarea[data-field="${field}"]`);
+        if (ta) ta.value = '';
+    }
+    showBlocks();
+    updatePreview();
+    loadRefs();
+}
+
+function showBlocks() {
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('blocksContainer').style.display = 'flex';
+    document.getElementById('blocksContainer').style.flexDirection = 'column';
+    document.getElementById('blocksContainer').style.gap = '12px';
+
+    // Auto-resize all textareas
+    document.querySelectorAll('textarea').forEach(autoResize);
+}
+
+
+// --- Block Toggle ---
+
+function toggleBlock(headerEl) {
+    const body = headerEl.nextElementSibling;
+    body.style.display = body.style.display === 'none' ? '' : 'none';
+}
+
+
+// --- Prompt Building ---
+
+function getBlocks() {
+    const blocks = {};
+    for (const field of FIELDS) {
+        const ta = document.querySelector(`textarea[data-field="${field}"]`);
+        blocks[field] = ta ? ta.value.trim() : '';
+    }
+    return blocks;
+}
+
+function buildPrompt(blocks) {
+    const parts = [];
+    if (blocks.style_header) parts.push(blocks.style_header);
+
+    if (blocks.scene_block) {
+        let scene = blocks.scene_block;
+        // Insert child_char_block if not already in scene
+        if (blocks.child_char_block && !scene.includes(blocks.child_char_block)) {
+            const lines = scene.split('\n');
+            const insertIdx = lines.findIndex(l => l.includes('CHARACTER SHEET'));
+            if (insertIdx >= 0) {
+                lines.splice(insertIdx + 1, 0, '', blocks.child_char_block);
+            } else {
+                lines.splice(1, 0, '', blocks.child_char_block);
+            }
+            scene = lines.join('\n');
+        }
+        parts.push(scene);
+    } else if (blocks.child_char_block) {
+        parts.push(blocks.child_char_block);
+    }
+
+    if (blocks.brush_guide) parts.push(blocks.brush_guide);
+    if (blocks.medium_block) parts.push(blocks.medium_block);
+    if (blocks.negative_block) parts.push(blocks.negative_block);
+
+    return parts.join('\n\n');
+}
+
+function updatePreview() {
+    const blocks = getBlocks();
+    const prompt = buildPrompt(blocks);
+
+    // Update preview
+    document.getElementById('promptPreview').textContent = prompt;
+    document.getElementById('totalChars').textContent = prompt.length.toLocaleString();
+
+    // Update per-block counters
+    for (const field of FIELDS) {
+        const card = document.querySelector(`[data-block="${field}"]`);
+        if (!card) continue;
+        const counter = card.querySelector('[data-counter]');
+        const ta = card.querySelector('textarea');
+        if (counter && ta) {
+            counter.textContent = ta.value.length > 0 ? `${ta.value.length} Z` : '';
+        }
+    }
+}
+
+
+// --- Prompt Preview Toggle ---
+
+function togglePreview() {
+    const el = document.getElementById('promptPreview');
+    const arrow = document.getElementById('previewArrow');
+    el.classList.toggle('open');
+    arrow.textContent = el.classList.contains('open') ? '▲' : '▼';
+}
+
+
+// --- Reference Images ---
+
+async function loadRefs() {
+    try {
+        const resp = await fetch('/api/refs');
+        const data = await resp.json();
+
+        const grid = document.getElementById('refGrid');
+        if (data.images.length === 0) {
+            grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:16px;color:var(--text-dim);font-size:12px">Keine Referenzbilder</div>';
+            return;
+        }
+
+        grid.innerHTML = data.images.map(img => `
+            <div class="ref-thumb" title="${img.name} (${img.size_kb} KB)">
+                <img src="${img.data_url}" alt="${img.name}">
+                <button class="ref-delete" onclick="deleteRef('${img.name}')">&times;</button>
+                <span class="ref-name">${img.name}</span>
+            </div>
+        `).join('');
+    } catch (e) {
+        console.error('Refs laden fehlgeschlagen:', e);
+    }
+}
+
+async function deleteRef(name) {
+    await fetch(`/api/refs/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    loadRefs();
+}
+
+async function uploadRefs(files) {
+    for (const file of files) {
+        const formData = new FormData();
+        formData.append('file', file);
+        await fetch('/api/refs/upload', { method: 'POST', body: formData });
+    }
+    loadRefs();
+    toast(`${files.length} Bild(er) hinzugefügt`, 'success');
+}
+
+async function changeRefDir(dir) {
+    const formData = new FormData();
+    formData.append('dir', dir);
+    await fetch('/api/refs/dir', { method: 'POST', body: formData });
+    loadRefs();
+}
+
+
+// --- Generate ---
+
+async function generate() {
+    const blocks = getBlocks();
+    const prompt = buildPrompt(blocks);
+
+    if (!prompt) {
+        toast('Kein Prompt vorhanden', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('generateBtn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Generiere...';
+
+    const resultsContainer = document.getElementById('resultsContainer');
+    resultsContainer.innerHTML = '<div style="padding:20px;text-align:center"><span class="spinner"></span><p style="margin-top:10px;color:var(--text-dim);font-size:12px">Warte auf Gemini API...</p></div>';
+
+    try {
+        const resp = await fetch('/api/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                prompt: prompt,
+                ref_instruction: blocks.ref_instruction,
+                temperature: parseFloat(document.getElementById('temperature').value),
+                variants: parseInt(document.getElementById('variants').value),
+                output_name: document.getElementById('outputName').value,
+            }),
+        });
+
+        const data = await resp.json();
+
+        if (data.error) {
+            toast(data.error, 'error');
+            resultsContainer.innerHTML = '';
+            return;
+        }
+
+        // Render results
+        resultsContainer.innerHTML = '';
+        for (const result of data.results) {
+            if (result.error) {
+                resultsContainer.innerHTML += `<div style="padding:10px;color:var(--accent);font-size:12px">Variante ${result.variant}: ${result.error}</div>`;
+                continue;
+            }
+            for (const part of result.parts) {
+                if (part.type === 'image') {
+                    resultsContainer.innerHTML += `
+                        <div class="result-image">
+                            <img src="${part.data_url}" alt="${part.filename}" onclick="showLightbox(this.src)">
+                            <div class="result-meta">
+                                ${part.filename} &middot; ${part.size_kb} KB &middot; ${result.elapsed}s
+                            </div>
+                        </div>
+                    `;
+                } else if (part.type === 'text') {
+                    resultsContainer.innerHTML += `<div style="padding:8px;font-size:11px;color:var(--text-dim);border-bottom:1px solid var(--border)">${part.content}</div>`;
+                }
+            }
+        }
+
+        toast(`${data.results.length} Variante(n) generiert — ${data.refs_used} Refs`, 'success');
+    } catch (e) {
+        toast('Fehler: ' + e.message, 'error');
+        resultsContainer.innerHTML = '';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+
+// --- Output Images ---
+
+async function loadOutputImages() {
+    try {
+        const resp = await fetch('/api/output/images');
+        const data = await resp.json();
+        const container = document.getElementById('resultsContainer');
+
+        if (data.images.length === 0) {
+            container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:12px">Keine Bilder im Output-Ordner</div>';
+            return;
+        }
+
+        container.innerHTML = data.images.map(img => `
+            <div class="result-image">
+                <img src="/api/output/image/${encodeURIComponent(img.name)}" alt="${img.name}" onclick="showLightbox(this.src)" loading="lazy">
+                <div class="result-meta">${img.name} &middot; ${img.size_kb} KB</div>
+            </div>
+        `).join('');
+    } catch (e) {
+        console.error('Output-Bilder laden fehlgeschlagen:', e);
+    }
+}
+
+
+// --- Lightbox ---
+
+function showLightbox(src) {
+    document.getElementById('lightboxImg').src = src;
+    document.getElementById('lightbox').style.display = 'flex';
+}
+
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        document.getElementById('lightbox').style.display = 'none';
+    }
+});
+
+
+// --- Auto-resize textareas ---
+
+function autoResize(ta) {
+    ta.style.height = 'auto';
+    ta.style.height = Math.max(80, ta.scrollHeight) + 'px';
+}
+
+document.querySelectorAll('textarea').forEach(ta => {
+    ta.addEventListener('input', () => autoResize(ta));
+});
+
+
+// --- Drag & Drop for script files ---
+
+const editorPanel = document.getElementById('editorPanel');
+editorPanel.addEventListener('dragover', e => {
+    e.preventDefault();
+    editorPanel.classList.add('drop-highlight');
+});
+editorPanel.addEventListener('dragleave', () => {
+    editorPanel.classList.remove('drop-highlight');
+});
+editorPanel.addEventListener('drop', e => {
+    e.preventDefault();
+    editorPanel.classList.remove('drop-highlight');
+    const file = e.dataTransfer.files[0];
+    if (file && file.name.endsWith('.py')) {
+        const input = document.getElementById('scriptFile');
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+        loadScript();
+    }
+});
+
+// Drag & Drop for ref images on right panel
+const refsContainer = document.getElementById('refsContainer');
+refsContainer.addEventListener('dragover', e => {
+    e.preventDefault();
+    refsContainer.classList.add('drop-highlight');
+});
+refsContainer.addEventListener('dragleave', () => {
+    refsContainer.classList.remove('drop-highlight');
+});
+refsContainer.addEventListener('drop', e => {
+    e.preventDefault();
+    refsContainer.classList.remove('drop-highlight');
+    const files = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/'));
+    if (files.length) uploadRefs(files);
+});
+
+
+// --- Toast ---
+
+function toast(msg, type = 'info') {
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3500);
+}
+
+
+// --- Init ---
+
+loadRefs();
+updatePreview();

@@ -378,6 +378,101 @@ async def api_get_output_image(filename: str):
     return FileResponse(path)
 
 
+REGISTRY_PATH = Path(os.path.expanduser(
+    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/look-registry.json"
+))
+DINO_BUCH_DIR = Path(os.path.expanduser(
+    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch"
+))
+# Ref images use paths relative to the parent (Comic_Projekt_2025/)
+KINDERBUCH_BASE = DINO_BUCH_DIR.parent
+
+
+@app.get("/api/registry")
+async def api_list_registry():
+    """List all entries in look-registry.json (titles + indices)."""
+    import json
+    if not REGISTRY_PATH.exists():
+        return JSONResponse({"error": "Registry nicht gefunden"}, status_code=404)
+    data = json.loads(REGISTRY_PATH.read_text())
+    entries = []
+    for i, entry in enumerate(data["bilder"]):
+        entries.append({
+            "index": i,
+            "titel": entry.get("titel", ""),
+            "sektion": entry.get("sektion", ""),
+            "bewertung": entry.get("bewertung", ""),
+            "datei": entry.get("datei", ""),
+        })
+    return JSONResponse({"entries": entries, "total": len(entries)})
+
+
+@app.get("/api/registry/{index}")
+async def api_load_registry(index: int):
+    """Load a specific entry from look-registry.json into the editor."""
+    import json
+    if not REGISTRY_PATH.exists():
+        return JSONResponse({"error": "Registry nicht gefunden"}, status_code=404)
+    data = json.loads(REGISTRY_PATH.read_text())
+    if index < 0 or index >= len(data["bilder"]):
+        return JSONResponse({"error": f"Index {index} nicht vorhanden"}, status_code=404)
+
+    entry = data["bilder"][index]
+    prompt = entry.get("prompt", "")
+    refs = entry.get("referenzbilder", [])
+
+    # Load the original image as base64 for preview
+    original_image = None
+    img_path = DINO_BUCH_DIR / entry.get("datei", "")
+    if img_path.exists():
+        img_data = img_path.read_bytes()
+        mime = "image/png" if img_path.suffix.lower() == ".png" else "image/jpeg"
+        original_image = {
+            "data_url": f"data:{mime};base64,{base64.b64encode(img_data).decode()}",
+            "name": img_path.name,
+            "size_kb": len(img_data) // 1024,
+        }
+
+    # Resolve ref image paths and load them
+    # Refs in the registry use paths relative to Comic_Projekt_2025/
+    ref_images = []
+    for ref_path_str in refs:
+        ref_path = KINDERBUCH_BASE / ref_path_str
+        if not ref_path.exists():
+            ref_path = DINO_BUCH_DIR / ref_path_str
+        if ref_path.exists():
+            ref_data = ref_path.read_bytes()
+            mime = "image/png" if ref_path.suffix.lower() == ".png" else "image/jpeg"
+            ref_images.append({
+                "name": ref_path.name,
+                "path": str(ref_path),
+                "size_kb": len(ref_data) // 1024,
+                "data_url": f"data:{mime};base64,{base64.b64encode(ref_data).decode()}",
+            })
+
+    # Determine output dir from the image path
+    output_dir = str(img_path.parent) if img_path.exists() else str(DEFAULT_OUTPUT_DIR)
+
+    # Build a suggested output name from the original filename
+    output_name = img_path.stem if img_path.exists() else "generated"
+
+    return JSONResponse({
+        "index": index,
+        "titel": entry.get("titel", ""),
+        "sektion": entry.get("sektion", ""),
+        "bewertung": entry.get("bewertung", ""),
+        "notiz": entry.get("notiz", ""),
+        "prompt": prompt,
+        "original_image": original_image,
+        "ref_images": ref_images,
+        "ref_paths": [str(KINDERBUCH_BASE / r) if (KINDERBUCH_BASE / r).exists() else str(DINO_BUCH_DIR / r) for r in refs],
+        "output_dir": output_dir,
+        "output_name": output_name,
+        "temperature": 1.0,
+        "variants": 1,
+    })
+
+
 if __name__ == "__main__":
     import uvicorn
     print("\n  🦕 Dino-Bildgen-UI")

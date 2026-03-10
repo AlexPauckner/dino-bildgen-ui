@@ -380,7 +380,103 @@ function toast(msg, type = 'info') {
 }
 
 
+// --- Registry Loading (from look-vergleich.html) ---
+
+async function loadFromRegistry(index) {
+    try {
+        const resp = await fetch(`/api/registry/${index}`);
+        const data = await resp.json();
+
+        if (data.error) {
+            toast(data.error, 'error');
+            return;
+        }
+
+        // The prompt from the registry is a single string — put it all in scene_block
+        const sceneTA = document.querySelector('textarea[data-field="scene_block"]');
+        if (sceneTA) {
+            sceneTA.value = data.prompt;
+            autoResize(sceneTA);
+        }
+
+        // Clear other blocks (registry prompts are monolithic)
+        for (const field of ['style_header', 'child_char_block', 'brush_guide', 'medium_block', 'negative_block']) {
+            const ta = document.querySelector(`textarea[data-field="${field}"]`);
+            if (ta) { ta.value = ''; autoResize(ta); }
+        }
+
+        // Set output name
+        if (data.output_name) {
+            document.getElementById('outputName').value = data.output_name;
+        }
+
+        // Show original image in results
+        const resultsContainer = document.getElementById('resultsContainer');
+        if (data.original_image) {
+            const badge = data.bewertung ? `<span style="background:var(--accent);color:white;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600">${data.bewertung}</span>` : '';
+            resultsContainer.innerHTML = `
+                <div style="padding:8px">
+                    <div style="font-size:12px;color:var(--yellow);margin-bottom:6px;font-weight:600">
+                        Original: ${data.titel} ${badge}
+                    </div>
+                    ${data.notiz ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;font-style:italic">${data.notiz}</div>` : ''}
+                </div>
+                <div class="result-image">
+                    <img src="${data.original_image.data_url}" alt="${data.titel}" onclick="showLightbox(this.src)">
+                    <div class="result-meta">
+                        ${data.original_image.name} &middot; ${data.original_image.size_kb} KB &middot; Original
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show ref images from the registry entry
+        if (data.ref_images && data.ref_images.length > 0) {
+            const grid = document.getElementById('refGrid');
+            grid.innerHTML = data.ref_images.map(img => `
+                <div class="ref-thumb" title="${img.name} (${img.size_kb} KB)">
+                    <img src="${img.data_url}" alt="${img.name}">
+                    <span class="ref-name">${img.name}</span>
+                </div>
+            `).join('');
+
+            // Update ref dir to parent of first ref
+            if (data.ref_paths && data.ref_paths.length > 0) {
+                const refDir = data.ref_paths[0].substring(0, data.ref_paths[0].lastIndexOf('/'));
+                document.getElementById('refDirInput').value = refDir;
+                // Tell backend about the ref dir
+                const formData = new FormData();
+                formData.append('dir', refDir);
+                await fetch('/api/refs/dir', { method: 'POST', body: formData });
+            }
+        }
+
+        // Set source info in header
+        document.title = `Dino Bildgen — ${data.titel}`;
+
+        showBlocks();
+        updatePreview();
+        toast(`Registry geladen: ${data.titel} (${data.sektion})`, 'success');
+    } catch (e) {
+        toast('Registry-Fehler: ' + e.message, 'error');
+    }
+}
+
+function checkHashRoute() {
+    const hash = window.location.hash;
+    if (hash.startsWith('#registry:')) {
+        const index = parseInt(hash.split(':')[1]);
+        if (!isNaN(index)) {
+            loadFromRegistry(index);
+        }
+    }
+}
+
+window.addEventListener('hashchange', checkHashRoute);
+
+
 // --- Init ---
 
 loadRefs();
 updatePreview();
+checkHashRoute();

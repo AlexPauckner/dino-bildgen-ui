@@ -408,6 +408,60 @@ header h1 span { color: var(--accent); }
     to { transform: translateY(0); opacity: 1; }
 }
 
+/* Ref suggestions */
+.suggestion-item {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.suggestion-item:hover { background: rgba(255,255,255,0.05); }
+.suggestion-item.ref-added {
+    opacity: 0.4;
+    pointer-events: none;
+}
+.suggestion-item img {
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+}
+.suggestion-info {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+.suggestion-title {
+    font-size: 11px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.suggestion-reason {
+    font-size: 10px;
+    color: var(--green);
+}
+.ref-reason {
+    position: absolute;
+    bottom: 14px;
+    left: 0;
+    right: 0;
+    padding: 1px 4px;
+    background: rgba(78,204,163,0.85);
+    font-size: 8px;
+    color: #000;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

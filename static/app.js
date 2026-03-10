@@ -156,7 +156,106 @@ function togglePreview() {
 }
 
 
-// --- Reference Images ---
+// --- Active Ref Paths (used for generation) ---
+let activeRefPaths = [];
+
+
+function renderActiveRefs(refs, label = 'Refs') {
+    const grid = document.getElementById('refGrid');
+    const header = `<div style="grid-column:1/-1;font-size:10px;color:var(--green);margin-bottom:2px">${label} (${refs.length})</div>`;
+    grid.innerHTML = header + refs.map((img, i) => {
+        const reason = img.reason ? `<span class="ref-reason">${img.reason}</span>` : '';
+        return `
+            <div class="ref-thumb active-ref" title="${img.name}${img.reason ? ' — ' + img.reason : ''} (${img.size_kb} KB)">
+                <img src="${img.data_url}" alt="${img.name}" onclick="showLightbox(this.src)">
+                <button class="ref-delete" onclick="removeActiveRef(${i})">&times;</button>
+                <span class="ref-name">${img.name}</span>
+                ${reason}
+            </div>
+        `;
+    }).join('');
+}
+
+function removeActiveRef(index) {
+    activeRefPaths.splice(index, 1);
+    // Re-fetch to update display
+    fetch('/api/refs/set-paths', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: activeRefPaths }),
+    });
+    // Remove from grid visually
+    const grid = document.getElementById('refGrid');
+    const thumbs = grid.querySelectorAll('.active-ref');
+    if (thumbs[index]) thumbs[index].remove();
+    // Update count in header
+    const header = grid.querySelector('div');
+    if (header) {
+        const count = grid.querySelectorAll('.active-ref').length;
+        header.textContent = `Refs (${count})`;
+    }
+    toast(`Ref entfernt (${activeRefPaths.length} übrig)`, 'info');
+}
+
+async function addRefFromSuggestion(registryIndex) {
+    try {
+        const resp = await fetch(`/api/registry/image/${registryIndex}`);
+        if (!resp.ok) return;
+        // Get path from the suggestions data
+        const sugEl = document.querySelector(`[data-sug-index="${registryIndex}"]`);
+        if (sugEl) {
+            const path = sugEl.dataset.path;
+            if (path && !activeRefPaths.includes(path)) {
+                activeRefPaths.push(path);
+                // Reload refs display
+                await fetch('/api/refs/set-paths', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ paths: activeRefPaths }),
+                });
+                sugEl.classList.add('ref-added');
+                toast(`Ref hinzugefügt (${activeRefPaths.length} total)`, 'success');
+            } else {
+                toast('Bereits als Ref aktiv', 'info');
+            }
+        }
+    } catch (e) {
+        console.error('Ref hinzufügen fehlgeschlagen:', e);
+    }
+}
+
+function renderRefSuggestions(suggestions) {
+    const container = document.getElementById('suggestionsContainer');
+    const section = document.getElementById('suggestionsSection');
+    if (!container || !section) return;
+
+    // Show only suggestions that aren't already active refs
+    const activeNames = new Set(activeRefPaths.map(p => p.split('/').pop()));
+
+    container.innerHTML = suggestions.map(sug => {
+        const fileName = sug.datei.split('/').pop();
+        const isActive = activeNames.has(fileName);
+        return `
+            <div class="suggestion-item ${isActive ? 'ref-added' : ''}"
+                 data-sug-index="${sug.index}"
+                 data-path="/Users/alexanderpauckner/Kinderbuch/Comic_Projekt_2025/Dino-Buch/${sug.datei}"
+                 onclick="addRefFromSuggestion(${sug.index})"
+                 title="Score: ${sug.score} — ${sug.reason}">
+                <img src="/api/registry/image/${sug.index}" loading="lazy" alt="${sug.titel}">
+                <div class="suggestion-info">
+                    <span class="suggestion-title">${sug.titel}</span>
+                    <span class="suggestion-reason">${sug.reason}${sug.bewertung ? ' ⭐' + sug.bewertung : ''}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    container.style.display = 'block';
+    section.style.display = 'block';
+}
+
+
+// --- Reference Images (directory mode) ---
 
 async function loadRefs() {
     try {
@@ -233,6 +332,7 @@ async function generate() {
                 temperature: parseFloat(document.getElementById('temperature').value),
                 variants: parseInt(document.getElementById('variants').value),
                 output_name: document.getElementById('outputName').value,
+                ref_paths: activeRefPaths.length > 0 ? activeRefPaths : undefined,
             }),
         });
 
@@ -439,24 +539,37 @@ async function loadFromRegistry(index) {
             `;
         }
 
-        // Show ref images from the registry entry (or fallback defaults)
+        // Show ref images — explicit from registry or suggested
+        activeRefPaths = [];
+
         if (data.ref_images && data.ref_images.length > 0) {
-            const grid = document.getElementById('refGrid');
-            grid.innerHTML = data.ref_images.map(img => `
-                <div class="ref-thumb" title="${img.name} (${img.size_kb} KB)">
-                    <img src="${img.data_url}" alt="${img.name}">
-                    <span class="ref-name">${img.name}</span>
-                </div>
-            `).join('');
+            // Explicit refs from registry
+            activeRefPaths = data.ref_images.map(r => r.path);
+            renderActiveRefs(data.ref_images, 'Registry-Refs');
+        } else if (data.suggested_refs && data.suggested_refs.length > 0) {
+            // Auto-suggested refs
+            activeRefPaths = data.suggested_refs.map(r => r.path);
+            renderActiveRefs(data.suggested_refs, 'Vorgeschlagen');
         }
 
-        // Update ref dir
-        if (data.ref_dir) {
-            document.getElementById('refDirInput').value = data.ref_dir;
-            const formData = new FormData();
-            formData.append('dir', data.ref_dir);
-            await fetch('/api/refs/dir', { method: 'POST', body: formData });
+        // Show suggestions panel for adding more
+        if (data.all_suggestions && data.all_suggestions.length > 0) {
+            renderRefSuggestions(data.all_suggestions);
         }
+
+        // Update ref dir display
+        if (data.ref_dir) {
+            document.getElementById('refDirInput').value = data.ref_dir || 'Intelligente Auswahl';
+        } else {
+            document.getElementById('refDirInput').value = 'Intelligente Auswahl (aus Registry)';
+        }
+
+        // Tell backend about our ref paths
+        await fetch('/api/refs/set-paths', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths: activeRefPaths }),
+        });
 
         // Set source info in header
         document.title = `Dino Bildgen — ${data.titel}`;

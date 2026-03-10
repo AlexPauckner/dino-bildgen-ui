@@ -24,6 +24,7 @@ DEFAULT_OUTPUT_DIR = Path(os.path.expanduser(
 state = {
     "ref_dir": str(DEFAULT_REF_DIR),
     "output_dir": str(DEFAULT_OUTPUT_DIR),
+    "ref_paths": [],  # Explicit ref file paths (overrides ref_dir when set)
 }
 
 
@@ -303,7 +304,17 @@ async def api_set_ref_dir(dir: str = Form(...)):
     """Change the reference images directory."""
     expanded = os.path.expanduser(dir)
     state["ref_dir"] = expanded
+    state["ref_paths"] = []  # Clear explicit paths when switching to dir mode
     return JSONResponse({"ok": True, "dir": expanded})
+
+
+@app.post("/api/refs/set-paths")
+async def api_set_ref_paths(request: Request):
+    """Set explicit reference image paths (from registry suggestions)."""
+    body = await request.json()
+    paths = body.get("paths", [])
+    state["ref_paths"] = [p for p in paths if Path(p).exists()]
+    return JSONResponse({"ok": True, "count": len(state["ref_paths"])})
 
 
 @app.post("/api/output/dir")
@@ -339,14 +350,24 @@ async def api_generate(request: Request):
 
     client = genai.Client(api_key=api_key)
 
-    ref_dir = Path(state["ref_dir"])
+    # Load reference images — prefer explicit paths, fallback to directory
     ref_images = []
-    if ref_dir.exists():
-        for ref_file in sorted(ref_dir.glob("*")):
-            if ref_file.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
-                data = ref_file.read_bytes()
-                mime = "image/png" if ref_file.suffix.lower() == ".png" else "image/jpeg"
+    ref_file_paths = body.get("ref_paths", state.get("ref_paths", []))
+    if ref_file_paths:
+        for rp in ref_file_paths:
+            rp = Path(rp)
+            if rp.exists() and rp.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+                data = rp.read_bytes()
+                mime = "image/png" if rp.suffix.lower() == ".png" else "image/jpeg"
                 ref_images.append(types.Part.from_bytes(data=data, mime_type=mime))
+    else:
+        ref_dir = Path(state["ref_dir"])
+        if ref_dir.exists():
+            for ref_file in sorted(ref_dir.glob("*")):
+                if ref_file.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+                    data = ref_file.read_bytes()
+                    mime = "image/png" if ref_file.suffix.lower() == ".png" else "image/jpeg"
+                    ref_images.append(types.Part.from_bytes(data=data, mime_type=mime))
 
     contents = list(ref_images) + [ref_instruction + prompt_text]
 
@@ -471,6 +492,107 @@ async def api_list_registry():
     return JSONResponse({"entries": entries, "total": len(entries)})
 
 
+def _load_image_as_thumb(path: Path, max_width: int = 300) -> dict | None:
+    """Load an image file, return as base64 thumbnail dict."""
+    if not path.exists():
+        return None
+    data = path.read_bytes()
+    mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    return {
+        "name": path.name,
+        "path": str(path),
+        "size_kb": len(data) // 1024,
+        "data_url": f"data:{mime};base64,{base64.b64encode(data).decode()}",
+    }
+
+
+def _extract_dino_name(titel: str) -> str:
+    """Extract the dino species name from a title.
+
+    'Baby Ornithomimus Charsheet V1' → 'ornithomimus'
+    'Ornithomimus-Kolonie Panorama V1' → 'ornithomimus'
+    'Velociraptor Portrait' → 'velociraptor'
+    """
+    # Remove common prefixes/suffixes
+    cleaned = titel.lower()
+    for word in ["baby", "adult", "männchen", "weibchen", "charsheet",
+                 "panorama", "kolonie", "portrait", "ganzkoerper", "ganzkörper",
+                 "jagd", "fluss", "seite", "frontal", "laufen", "rennt",
+                 "v1", "v2", "v3", "v4", "v5", "revidiert", "final",
+                 "frisch geschlüpft", "braun/tarnung", "soft camouflage",
+                 "extravagante balz-federn", "cyan", "korrekturen", "4k 21:9",
+                 "weiss", "hintergrund", "—", "-", "(", ")"]:
+        cleaned = cleaned.replace(word, " ")
+    # Take the longest remaining word (likely the species name)
+    words = [w.strip() for w in cleaned.split() if len(w.strip()) > 3]
+    return words[0] if words else ""
+
+
+def suggest_refs_for_entry(all_entries: list, current_index: int) -> list[dict]:
+    """Suggest the best reference images for a registry entry.
+
+    Strategy:
+    1. Same dino species → highest priority (charsheets > scenes)
+    2. TOP6 rated images → good style references
+    3. Same sektion → related images
+    Excludes the current image itself.
+    Returns list of {index, titel, datei, score, reason} sorted by score.
+    """
+    current = all_entries[current_index]
+    current_dino = _extract_dino_name(current.get("titel", ""))
+    current_sektion = current.get("sektion", "")
+
+    suggestions = []
+    for i, entry in enumerate(all_entries):
+        if i == current_index:
+            continue
+        score = 0
+        reasons = []
+        entry_dino = _extract_dino_name(entry.get("titel", ""))
+        titel = entry.get("titel", "").lower()
+        datei = entry.get("datei", "")
+
+        # Same dino species — highest priority
+        if current_dino and entry_dino and current_dino == entry_dino:
+            score += 100
+            reasons.append("gleicher Dino")
+            # Charsheets are better refs than scenes
+            if "charsheet" in datei.lower():
+                score += 30
+                reasons.append("Charsheet")
+            # Prefer approved/final versions
+            if "final" in titel or "v3" in titel:
+                score += 10
+                reasons.append("Final")
+
+        # TOP6 rated — good style benchmark
+        if entry.get("bewertung") == "TOP6":
+            score += 50
+            reasons.append("TOP6")
+
+        # Same sektion
+        if current_sektion and entry.get("sektion") == current_sektion:
+            score += 20
+            reasons.append("gleiche Sektion")
+
+        # Charsheets are generally better refs
+        if "charsheet" in datei.lower() and score > 0:
+            score += 5
+
+        if score > 0:
+            suggestions.append({
+                "index": i,
+                "titel": entry.get("titel", ""),
+                "datei": datei,
+                "bewertung": entry.get("bewertung", ""),
+                "score": score,
+                "reason": ", ".join(reasons),
+            })
+
+    suggestions.sort(key=lambda x: x["score"], reverse=True)
+    return suggestions
+
+
 @app.get("/api/registry/{index}")
 async def api_load_registry(index: int):
     """Load a specific entry from look-registry.json into the editor."""
@@ -492,16 +614,9 @@ async def api_load_registry(index: int):
     original_image = None
     img_path = DINO_BUCH_DIR / entry.get("datei", "")
     if img_path.exists():
-        img_data = img_path.read_bytes()
-        mime = "image/png" if img_path.suffix.lower() == ".png" else "image/jpeg"
-        original_image = {
-            "data_url": f"data:{mime};base64,{base64.b64encode(img_data).decode()}",
-            "name": img_path.name,
-            "size_kb": len(img_data) // 1024,
-        }
+        original_image = _load_image_as_thumb(img_path)
 
-    # Resolve ref image paths and load them
-    # Refs in the registry use paths relative to Comic_Projekt_2025/
+    # Resolve explicit ref image paths from registry
     ref_images = []
     ref_dir_resolved = None
     for ref_path_str in refs:
@@ -511,33 +626,28 @@ async def api_load_registry(index: int):
         if ref_path.exists():
             if not ref_dir_resolved:
                 ref_dir_resolved = str(ref_path.parent)
-            ref_data = ref_path.read_bytes()
-            mime = "image/png" if ref_path.suffix.lower() == ".png" else "image/jpeg"
-            ref_images.append({
-                "name": ref_path.name,
-                "path": str(ref_path),
-                "size_kb": len(ref_data) // 1024,
-                "data_url": f"data:{mime};base64,{base64.b64encode(ref_data).decode()}",
-            })
+            thumb = _load_image_as_thumb(ref_path)
+            if thumb:
+                ref_images.append(thumb)
 
-    # Fallback: if no refs in registry, use default ref dir
-    if not ref_images and DEFAULT_REF_DIR.exists():
-        ref_dir_resolved = str(DEFAULT_REF_DIR)
-        for ref_file in sorted(DEFAULT_REF_DIR.glob("*")):
-            if ref_file.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
-                ref_data = ref_file.read_bytes()
-                mime = "image/png" if ref_file.suffix.lower() == ".png" else "image/jpeg"
-                ref_images.append({
-                    "name": ref_file.name,
-                    "path": str(ref_file),
-                    "size_kb": len(ref_data) // 1024,
-                    "data_url": f"data:{mime};base64,{base64.b64encode(ref_data).decode()}",
-                })
+    # Intelligent ref suggestions from the registry
+    suggestions = suggest_refs_for_entry(data["bilder"], index)
+
+    # Auto-select top refs if registry has none explicitly listed
+    suggested_refs = []
+    if not ref_images:
+        # Load the top suggested images as refs (max 8)
+        for sug in suggestions[:8]:
+            sug_path = DINO_BUCH_DIR / sug["datei"]
+            thumb = _load_image_as_thumb(sug_path)
+            if thumb:
+                thumb["reason"] = sug["reason"]
+                thumb["score"] = sug["score"]
+                thumb["registry_index"] = sug["index"]
+                suggested_refs.append(thumb)
 
     # Determine output dir from the image path
     output_dir = str(img_path.parent) if img_path.exists() else str(DEFAULT_OUTPUT_DIR)
-
-    # Build a suggested output name from the original filename
     output_name = img_path.stem if img_path.exists() else "generated"
 
     return JSONResponse({
@@ -550,12 +660,29 @@ async def api_load_registry(index: int):
         "blocks": blocks,
         "original_image": original_image,
         "ref_images": ref_images,
-        "ref_dir": ref_dir_resolved or str(DEFAULT_REF_DIR),
+        "suggested_refs": suggested_refs,
+        "all_suggestions": suggestions[:20],  # For the picker UI
+        "ref_dir": ref_dir_resolved,
         "output_dir": output_dir,
         "output_name": output_name,
         "temperature": 1.0,
         "variants": 1,
     })
+
+
+@app.get("/api/registry/image/{index}")
+async def api_registry_image(index: int):
+    """Serve a registry image by index (for the ref picker)."""
+    import json
+    if not REGISTRY_PATH.exists():
+        return JSONResponse({"error": "Nicht gefunden"}, status_code=404)
+    data = json.loads(REGISTRY_PATH.read_text())
+    if index < 0 or index >= len(data["bilder"]):
+        return JSONResponse({"error": "Nicht gefunden"}, status_code=404)
+    img_path = DINO_BUCH_DIR / data["bilder"][index]["datei"]
+    if not img_path.exists():
+        return JSONResponse({"error": "Bild nicht gefunden"}, status_code=404)
+    return FileResponse(img_path)
 
 
 if __name__ == "__main__":

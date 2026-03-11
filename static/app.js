@@ -575,17 +575,6 @@ async function loadFromRegistry(index) {
             }
         }
 
-        // If no explicit refs, use suggestions as defaults
-        if (refs.style.length === 0 && refs.character.length === 0 && refs.scribble.length === 0) {
-            if (data.suggested_refs && data.suggested_refs.length > 0) {
-                for (var si = 0; si < data.suggested_refs.length; si++) {
-                    var sug = data.suggested_refs[si];
-                    var sugRole = sug.suggested_role || 'style';
-                    refs[sugRole].push(sug);
-                }
-            }
-        }
-
         renderAllRefs();
 
         // Show suggestions panel

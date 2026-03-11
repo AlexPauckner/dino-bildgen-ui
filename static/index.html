@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dino Bildgen UI</title>
+    <title>Dino Bildgen UI V3</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
 <header>
-    <h1><span>🦕</span> Dino Bildgen UI</h1>
+    <h1><span>&#x1F995;</span> Dino Bildgen UI <small style="font-size:11px;color:var(--text-dim);margin-left:6px">V3</small></h1>
     <div class="header-actions">
         <div class="file-input-wrapper">
             <button class="btn btn-secondary btn-small">Script laden</button>
@@ -23,102 +23,69 @@
     <!-- Left: Editor -->
     <div class="editor-panel" id="editorPanel">
         <div id="emptyState" class="empty-state">
-            <p>Lade ein Python-Script oder starte mit leeren Blöcken.</p>
+            <p>Lade ein Python-Script oder starte mit leeren Bl&ouml;cken.</p>
             <div class="file-input-wrapper">
-                <button class="btn btn-primary">Script öffnen (.py)</button>
+                <button class="btn btn-primary">Script &ouml;ffnen (.py)</button>
                 <input type="file" accept=".py" onchange="document.getElementById('scriptFile').files = this.files; loadScript()">
             </div>
             <p style="margin-top: 16px">
-                <button class="btn btn-secondary" onclick="resetBlocks()">Leere Blöcke starten</button>
+                <button class="btn btn-secondary" onclick="resetBlocks()">Leere Bl&ouml;cke starten</button>
             </p>
         </div>
 
         <div id="blocksContainer" style="display:none">
-            <!-- Style Header -->
-            <div class="block-card" data-block="style_header">
+            <!-- Style -->
+            <div class="block-card" data-block="style">
                 <div class="block-header" onclick="toggleBlock(this)">
-                    <span class="block-title">Style Header</span>
+                    <span class="block-title">Style</span>
                     <span class="block-meta" data-counter></span>
                 </div>
                 <div class="block-body">
-                    <textarea data-field="style_header" oninput="updatePreview()" placeholder="Stil-Beschreibung (Ölmalerei, Impasto...)"></textarea>
+                    <textarea data-field="style" oninput="updatePreview()" placeholder="STYLE: Oil painted children's book illustration with thick impasto brush strokes.&#10;Texture hierarchy &mdash; characters: bold sculptural strokes, environment: medium detail,&#10;sky/background: soft atmospheric washes. Medium: oil on canvas."></textarea>
                 </div>
             </div>
 
-            <!-- Logline -->
-            <div class="block-card" data-block="logline">
+            <!-- Scene -->
+            <div class="block-card scene" data-block="scene">
                 <div class="block-header" onclick="toggleBlock(this)">
-                    <span class="block-title">Logline</span>
+                    <span class="block-title">Scene</span>
                     <span class="block-meta" data-counter></span>
                 </div>
                 <div class="block-body">
-                    <textarea data-field="logline" oninput="updatePreview()" placeholder="Kurze Szenen-Beschreibung: Was passiert? Was ist der Moment?" style="min-height:60px"></textarea>
+                    <textarea data-field="scene" oninput="updatePreview()" placeholder="SCENE: Was passiert im Bild? Ort, Handlung, Stimmung, Licht..."></textarea>
                 </div>
             </div>
 
-            <!-- Child Character Block -->
-            <div class="block-card" data-block="child_char_block">
+            <!-- Character -->
+            <div class="block-card" data-block="character">
                 <div class="block-header" onclick="toggleBlock(this)">
-                    <span class="block-title">Character Block</span>
+                    <span class="block-title">Character</span>
                     <span class="block-meta" data-counter></span>
                 </div>
                 <div class="block-body">
-                    <textarea data-field="child_char_block" oninput="updatePreview()" placeholder="Proportionen, Alter, Charakter-Beschreibung..."></textarea>
+                    <textarea data-field="character" oninput="updatePreview()" placeholder="CHARACTER: Dino-Beschreibung, Proportionen, Alter, Merkmale...&#10;Child proportions &mdash; large heads, big expressive eyes."></textarea>
                 </div>
             </div>
 
-            <!-- Scene Block (the big one) -->
-            <div class="block-card scene" data-block="scene_block">
+            <!-- Composition -->
+            <div class="block-card" data-block="composition">
                 <div class="block-header" onclick="toggleBlock(this)">
-                    <span class="block-title">Scene / Composition</span>
+                    <span class="block-title">Composition</span>
                     <span class="block-meta" data-counter></span>
                 </div>
                 <div class="block-body">
-                    <textarea data-field="scene_block" oninput="updatePreview()" placeholder="CHARACTER SHEET — ...&#10;Dino-Beschreibung, Farben, 4 Views..."></textarea>
+                    <textarea data-field="composition" oninput="updatePreview()" placeholder="COMPOSITION: Kamera, Perspektive, Bildaufbau, Vordergrund/Hintergrund..."></textarea>
                 </div>
             </div>
 
-            <!-- Brush Guide -->
-            <div class="block-card" data-block="brush_guide">
+            <!-- Negative -->
+            <div class="block-card" data-block="negative">
                 <div class="block-header" onclick="toggleBlock(this)">
-                    <span class="block-title">Brush Guide</span>
+                    <span class="block-title">Negative</span>
                     <span class="block-meta" data-counter></span>
                 </div>
                 <div class="block-body">
-                    <textarea data-field="brush_guide" oninput="updatePreview()" placeholder="Pinselstrich-Anweisungen..."></textarea>
-                </div>
-            </div>
-
-            <!-- Medium Block -->
-            <div class="block-card" data-block="medium_block">
-                <div class="block-header" onclick="toggleBlock(this)">
-                    <span class="block-title">Medium</span>
-                    <span class="block-meta" data-counter></span>
-                </div>
-                <div class="block-body">
-                    <textarea data-field="medium_block" oninput="updatePreview()" placeholder="Medium: oil paint on thick canvas..."></textarea>
-                </div>
-            </div>
-
-            <!-- Negative Block -->
-            <div class="block-card" data-block="negative_block">
-                <div class="block-header" onclick="toggleBlock(this)">
-                    <span class="block-title">Negative Prompt</span>
-                    <span class="block-meta" data-counter></span>
-                </div>
-                <div class="block-body">
-                    <textarea data-field="negative_block" oninput="updatePreview()" placeholder="No photorealism, no plastic shine..."></textarea>
-                </div>
-            </div>
-
-            <!-- Ref Instruction (collapsible) -->
-            <div class="block-card" data-block="ref_instruction">
-                <div class="block-header" onclick="toggleBlock(this)">
-                    <span class="block-title">Ref Instruction</span>
-                    <span class="block-meta" data-counter></span>
-                </div>
-                <div class="block-body" style="display:none">
-                    <textarea data-field="ref_instruction" oninput="updatePreview()" placeholder="Use these images as STYLE REFERENCE..."></textarea>
+                    <textarea data-field="negative" oninput="updatePreview()" placeholder="NEGATIVE: No photorealism, no 3D render, no anime, no artist signature,&#10;no canvas weave texture, no bokeh circles, no text, no watermarks."></textarea>
                 </div>
             </div>
         </div>
@@ -126,27 +93,61 @@
 
     <!-- Right: Refs + Results -->
     <div class="right-panel">
-        <!-- Reference Images -->
+        <!-- Reference Images: 3 Categories -->
         <div class="panel-section">
             <div class="panel-section-header">
                 <span>Referenzbilder</span>
-                <div class="file-input-wrapper">
-                    <button class="btn btn-secondary btn-small">+</button>
-                    <input type="file" accept="image/*" multiple onchange="uploadRefs(this.files)">
+                <span class="ref-total" id="refTotal">0</span>
+            </div>
+            <div class="panel-section-body ref-categories-body">
+                <!-- Style Refs -->
+                <div class="ref-category" data-role="style">
+                    <div class="ref-cat-header">
+                        <span>Style Refs <span class="ref-count" id="styleRefCount">0</span></span>
+                        <div class="file-input-wrapper">
+                            <button class="btn btn-secondary btn-small">+</button>
+                            <input type="file" accept="image/*" multiple onchange="uploadRefsToCategory('style', this.files)">
+                        </div>
+                    </div>
+                    <div class="ref-cat-drop" ondragover="refCatDragOver(event)" ondragleave="refCatDragLeave(event)" ondrop="refCatDrop(event, 'style')">
+                        <div class="ref-grid" id="styleRefGrid"></div>
+                    </div>
                 </div>
-            </div>
-            <div class="dir-input">
-                <input type="text" id="refDirInput" value="/tmp/dino-neue-refs" onchange="changeRefDir(this.value)">
-            </div>
-            <div class="panel-section-body" id="refsContainer">
-                <div class="ref-grid" id="refGrid"></div>
+
+                <!-- Character Refs -->
+                <div class="ref-category" data-role="character">
+                    <div class="ref-cat-header">
+                        <span>Character Refs <span class="ref-count" id="characterRefCount">0</span></span>
+                        <div class="file-input-wrapper">
+                            <button class="btn btn-secondary btn-small">+</button>
+                            <input type="file" accept="image/*" multiple onchange="uploadRefsToCategory('character', this.files)">
+                        </div>
+                    </div>
+                    <div class="ref-cat-drop" ondragover="refCatDragOver(event)" ondragleave="refCatDragLeave(event)" ondrop="refCatDrop(event, 'character')">
+                        <div class="ref-grid" id="characterRefGrid"></div>
+                    </div>
+                </div>
+
+                <!-- Scribble Refs -->
+                <div class="ref-category" data-role="scribble">
+                    <div class="ref-cat-header">
+                        <span>Scribbles <span class="ref-count" id="scribbleRefCount">0</span></span>
+                        <div class="file-input-wrapper">
+                            <button class="btn btn-secondary btn-small">+</button>
+                            <input type="file" accept="image/*" multiple onchange="uploadRefsToCategory('scribble', this.files)">
+                        </div>
+                    </div>
+                    <div class="ref-cat-drop" ondragover="refCatDragOver(event)" ondragleave="refCatDragLeave(event)" ondrop="refCatDrop(event, 'scribble')">
+                        <div class="ref-grid" id="scribbleRefGrid"></div>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <!-- Ref Suggestions (from Registry) -->
+        <!-- Ref Suggestions -->
         <div class="panel-section" id="suggestionsSection" style="display:none">
             <div class="panel-section-header">
-                <span>Passende Refs (klick = hinzufügen)</span>
+                <span>Passende Refs (klick = hinzuf&uuml;gen)</span>
             </div>
             <div class="panel-section-body" style="max-height:180px">
                 <div id="suggestionsContainer" style="display:none"></div>
@@ -171,7 +172,6 @@
                 <button class="btn btn-secondary btn-small" onclick="loadOutputImages()">Refresh</button>
             </div>
             <div class="panel-section-body results" id="resultsContainer">
-                <!-- Results appear here -->
             </div>
         </div>
     </div>
@@ -181,12 +181,12 @@
 <div class="bottom-bar">
     <div class="prompt-preview-toggle" onclick="togglePreview()">
         <span>Prompt Preview (<span id="totalChars">0</span> Zeichen)</span>
-        <span id="previewArrow">▼</span>
+        <span id="previewArrow">&#x25BC;</span>
     </div>
     <div class="prompt-preview" id="promptPreview"></div>
 
     <div class="generate-row">
-        <input type="text" id="outputName" value="charsheet-generated" placeholder="Dateiname">
+        <input type="text" id="outputName" value="generated" placeholder="Dateiname">
 
         <label>Temp</label>
         <input type="range" id="temperature" min="0" max="2" step="0.1" value="1.0" oninput="document.getElementById('tempValue').textContent = this.value">
@@ -194,6 +194,11 @@
 
         <label>Varianten</label>
         <input type="number" id="variants" min="1" max="5" value="1">
+
+        <label class="context-toggle" title="Kinderbuch-Kontext-Prefix voranstellen">
+            <input type="checkbox" id="contextPrefix" checked>
+            <span>Kinderbuch</span>
+        </label>
 
         <button class="btn btn-primary" id="generateBtn" onclick="generate()">Generate</button>
     </div>

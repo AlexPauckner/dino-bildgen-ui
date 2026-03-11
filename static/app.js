@@ -1,9 +1,26 @@
-// Dino-Bildgen-UI — Frontend Logic
+// Dino-Bildgen-UI V3 — Frontend Logic
+// 5-Block-Schema + 3 Ref-Kategorien
 
-const FIELDS = [
-    'style_header', 'logline', 'child_char_block', 'scene_block',
-    'brush_guide', 'medium_block', 'negative_block', 'ref_instruction'
-];
+const FIELDS = ['style', 'scene', 'character', 'composition', 'negative'];
+
+// Legacy field mapping (V1/V2 → V3)
+const LEGACY_MAP = {
+    style_header: 'style',
+    logline: 'scene',
+    child_char_block: 'character',
+    scene_block: 'scene',
+    brush_guide: 'style',
+    medium_block: 'style',
+    negative_block: 'negative',
+};
+
+// --- Ref State (3 categories) ---
+let refs = {
+    style: [],      // [{name, path, data_url, size_kb, reason?, score?, registry_index?}]
+    character: [],
+    scribble: [],
+};
+
 
 // --- Script Loading ---
 
@@ -20,24 +37,14 @@ async function loadScript() {
         const resp = await fetch('/api/parse-script', { method: 'POST', body: formData });
         const data = await resp.json();
 
-        // Fill blocks
         for (const field of FIELDS) {
-            const ta = document.querySelector(`textarea[data-field="${field}"]`);
+            const ta = document.querySelector('textarea[data-field="' + field + '"]');
             if (ta && data[field]) {
                 ta.value = data[field];
                 autoResize(ta);
             }
         }
 
-        // Update dirs
-        if (data.ref_dir) {
-            document.getElementById('refDirInput').value = data.ref_dir;
-        }
-        if (data.output_dir) {
-            // Update output name based on loaded script
-            const name = input.files[0].name.replace('.py', '').replace('generate_', 'charsheet-');
-            document.getElementById('outputName').value = name;
-        }
         if (data.temperature !== undefined) {
             document.getElementById('temperature').value = data.temperature;
             document.getElementById('tempValue').textContent = data.temperature;
@@ -46,9 +53,12 @@ async function loadScript() {
             document.getElementById('variants').value = data.variants;
         }
 
+        const name = input.files[0].name.replace('.py', '').replace('generate_', '');
+        document.getElementById('outputName').value = name;
+
         showBlocks();
         updatePreview();
-        loadRefs();
+        autoSave();
         toast('Script geladen: ' + input.files[0].name, 'success');
     } catch (e) {
         toast('Fehler beim Parsen: ' + e.message, 'error');
@@ -58,21 +68,22 @@ async function loadScript() {
 
 function resetBlocks() {
     for (const field of FIELDS) {
-        const ta = document.querySelector(`textarea[data-field="${field}"]`);
+        const ta = document.querySelector('textarea[data-field="' + field + '"]');
         if (ta) ta.value = '';
     }
+    refs = { style: [], character: [], scribble: [] };
+    renderAllRefs();
     showBlocks();
     updatePreview();
-    loadRefs();
+    autoSave();
 }
 
 function showBlocks() {
     document.getElementById('emptyState').style.display = 'none';
-    document.getElementById('blocksContainer').style.display = 'flex';
-    document.getElementById('blocksContainer').style.flexDirection = 'column';
-    document.getElementById('blocksContainer').style.gap = '12px';
-
-    // Auto-resize all textareas
+    var bc = document.getElementById('blocksContainer');
+    bc.style.display = 'flex';
+    bc.style.flexDirection = 'column';
+    bc.style.gap = '12px';
     document.querySelectorAll('textarea').forEach(autoResize);
 }
 
@@ -80,7 +91,7 @@ function showBlocks() {
 // --- Block Toggle ---
 
 function toggleBlock(headerEl) {
-    const body = headerEl.nextElementSibling;
+    var body = headerEl.nextElementSibling;
     body.style.display = body.style.display === 'none' ? '' : 'none';
 }
 
@@ -88,165 +99,224 @@ function toggleBlock(headerEl) {
 // --- Prompt Building ---
 
 function getBlocks() {
-    const blocks = {};
-    for (const field of FIELDS) {
-        const ta = document.querySelector(`textarea[data-field="${field}"]`);
+    var blocks = {};
+    for (var i = 0; i < FIELDS.length; i++) {
+        var field = FIELDS[i];
+        var ta = document.querySelector('textarea[data-field="' + field + '"]');
         blocks[field] = ta ? ta.value.trim() : '';
     }
     return blocks;
 }
 
 function buildPrompt(blocks) {
-    // Reihenfolge: Style → Logline → Character → Scene/Composition → Brush → Medium → Negative
-    const parts = [];
-    if (blocks.style_header) parts.push(blocks.style_header);
-    if (blocks.logline) parts.push(blocks.logline);
-    if (blocks.child_char_block) parts.push(blocks.child_char_block);
-    if (blocks.scene_block) parts.push(blocks.scene_block);
-    if (blocks.brush_guide) parts.push(blocks.brush_guide);
-    if (blocks.medium_block) parts.push(blocks.medium_block);
-    if (blocks.negative_block) parts.push(blocks.negative_block);
-
+    var parts = [];
+    for (var i = 0; i < FIELDS.length; i++) {
+        if (blocks[FIELDS[i]]) parts.push(blocks[FIELDS[i]]);
+    }
     return parts.join('\n\n');
 }
 
 function updatePreview() {
-    const blocks = getBlocks();
-    const prompt = buildPrompt(blocks);
+    var blocks = getBlocks();
+    var prompt = buildPrompt(blocks);
 
-    // Update preview
     document.getElementById('promptPreview').textContent = prompt;
     document.getElementById('totalChars').textContent = prompt.length.toLocaleString();
 
-    // Update per-block counters
-    for (const field of FIELDS) {
-        const card = document.querySelector(`[data-block="${field}"]`);
+    for (var i = 0; i < FIELDS.length; i++) {
+        var field = FIELDS[i];
+        var card = document.querySelector('[data-block="' + field + '"]');
         if (!card) continue;
-        const counter = card.querySelector('[data-counter]');
-        const ta = card.querySelector('textarea');
+        var counter = card.querySelector('[data-counter]');
+        var ta = card.querySelector('textarea');
         if (counter && ta) {
-            counter.textContent = ta.value.length > 0 ? `${ta.value.length} Z` : '';
+            counter.textContent = ta.value.length > 0 ? ta.value.length + ' Z' : '';
         }
     }
+    autoSave();
 }
 
 
 // --- Prompt Preview Toggle ---
 
 function togglePreview() {
-    const el = document.getElementById('promptPreview');
-    const arrow = document.getElementById('previewArrow');
+    var el = document.getElementById('promptPreview');
+    var arrow = document.getElementById('previewArrow');
     el.classList.toggle('open');
-    arrow.textContent = el.classList.contains('open') ? '▲' : '▼';
+    arrow.textContent = el.classList.contains('open') ? '\u25B2' : '\u25BC';
 }
 
 
-// --- Active Refs (used for generation) ---
-let activeRefs = []; // [{name, path, data_url, size_kb, reason?, score?}]
-let activeRefsLabel = 'Refs';
+// --- Ref Category Management ---
 
-function getActiveRefPaths() {
-    return activeRefs.map(r => r.path);
+function addRef(role, refObj) {
+    if (!refs[role]) refs[role] = [];
+    // Dedupe by path
+    if (refObj.path && refs[role].some(function(r) { return r.path === refObj.path; })) {
+        toast('Bereits als Ref aktiv', 'info');
+        return false;
+    }
+    refs[role].push(refObj);
+    renderRefCategory(role);
+    updateRefTotal();
+    autoSave();
+    return true;
 }
 
-function renderActiveRefs(refs, label) {
-    if (label) activeRefsLabel = label;
-    activeRefs = refs || activeRefs;
-    const grid = document.getElementById('refGrid');
-    if (activeRefs.length === 0) {
-        grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:16px;color:var(--text-dim);font-size:12px">Keine Referenzbilder</div>';
+function removeRef(role, index) {
+    refs[role].splice(index, 1);
+    renderRefCategory(role);
+    updateRefTotal();
+    autoSave();
+    toast('Ref entfernt (' + refs[role].length + ' ' + role + ')', 'info');
+}
+
+function renderRefCategory(role) {
+    var grid = document.getElementById(role + 'RefGrid');
+    var countEl = document.getElementById(role + 'RefCount');
+    var items = refs[role] || [];
+
+    countEl.textContent = items.length;
+
+    if (items.length === 0) {
+        grid.innerHTML = '<div class="ref-empty">Drop oder + klicken</div>';
         return;
     }
-    const header = `<div style="grid-column:1/-1;font-size:10px;color:var(--green);margin-bottom:2px">${activeRefsLabel} (${activeRefs.length})</div>`;
-    grid.innerHTML = header + activeRefs.map((img, i) => {
-        const reason = img.reason ? `<span class="ref-reason">${img.reason}</span>` : '';
-        const src = img.data_url || `/api/registry/image/${img.registry_index}`;
-        return `
-            <div class="ref-thumb active-ref" title="${img.name}${img.reason ? ' — ' + img.reason : ''} (${img.size_kb || '?'} KB)">
-                <img src="${src}" alt="${img.name}" onclick="showLightbox(this.src)">
-                <button class="ref-delete" onclick="removeActiveRef(${i})">&times;</button>
-                <span class="ref-name">${img.name}</span>
-                ${reason}
-            </div>
-        `;
+
+    grid.innerHTML = items.map(function(img, i) {
+        var reason = img.reason ? '<span class="ref-reason">' + img.reason + '</span>' : '';
+        var src = img.data_url || ('/api/registry/image/' + img.registry_index);
+        return '<div class="ref-thumb active-ref" title="' + img.name + (img.reason ? ' \u2014 ' + img.reason : '') + '">' +
+            '<img src="' + src + '" alt="' + img.name + '" onclick="showLightbox(this.src)">' +
+            '<button class="ref-delete" onclick="removeRef(\'' + role + '\', ' + i + ')">&times;</button>' +
+            '<span class="ref-name">' + img.name + '</span>' +
+            reason +
+            '</div>';
     }).join('');
 }
 
-function removeActiveRef(index) {
-    activeRefs.splice(index, 1);
-    renderActiveRefs();
-    syncRefPaths();
-    toast(`Ref entfernt (${activeRefs.length} übrig)`, 'info');
+function renderAllRefs() {
+    renderRefCategory('style');
+    renderRefCategory('character');
+    renderRefCategory('scribble');
+    updateRefTotal();
 }
 
-function syncRefPaths() {
-    fetch('/api/refs/set-paths', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths: getActiveRefPaths() }),
-    });
+function updateRefTotal() {
+    var total = refs.style.length + refs.character.length + refs.scribble.length;
+    document.getElementById('refTotal').textContent = total;
 }
 
-async function addRefFromSuggestion(registryIndex) {
-    try {
-        const sugEl = document.querySelector(`[data-sug-index="${registryIndex}"]`);
-        if (!sugEl) return;
+function getAllRefPaths() {
+    return {
+        style: refs.style.map(function(r) { return r.path; }).filter(Boolean),
+        character: refs.character.map(function(r) { return r.path; }).filter(Boolean),
+        scribble: refs.scribble.map(function(r) { return r.path; }).filter(Boolean),
+    };
+}
 
-        const path = sugEl.dataset.path;
-        if (!path) return;
 
-        // Already active?
-        if (activeRefs.some(r => r.path === path)) {
-            toast('Bereits als Ref aktiv', 'info');
-            return;
+// --- Ref Upload per Category ---
+
+function uploadRefsToCategory(role, files) {
+    for (var i = 0; i < files.length; i++) {
+        (function(file) {
+            var reader = new FileReader();
+            reader.onload = function() {
+                addRef(role, {
+                    name: file.name,
+                    path: '',  // Uploaded files don't have a server path yet
+                    data_url: reader.result,
+                    size_kb: Math.round(file.size / 1024),
+                });
+                // Also upload to server ref dir
+                var formData = new FormData();
+                formData.append('file', file);
+                fetch('/api/refs/upload', { method: 'POST', body: formData });
+            };
+            reader.readAsDataURL(file);
+        })(files[i]);
+    }
+    toast(files.length + ' Bild(er) hinzugef\u00fcgt zu ' + role, 'success');
+}
+
+
+// --- Ref Drag & Drop per Category ---
+
+function refCatDragOver(e) {
+    e.preventDefault();
+    e.currentTarget.classList.add('drop-highlight');
+}
+
+function refCatDragLeave(e) {
+    e.currentTarget.classList.remove('drop-highlight');
+}
+
+function refCatDrop(e, role) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drop-highlight');
+    var files = [];
+    for (var i = 0; i < e.dataTransfer.files.length; i++) {
+        if (e.dataTransfer.files[i].type.startsWith('image/')) {
+            files.push(e.dataTransfer.files[i]);
         }
+    }
+    if (files.length) uploadRefsToCategory(role, files);
+}
 
-        // Get suggestion info
-        const titel = sugEl.querySelector('.suggestion-title')?.textContent || path.split('/').pop();
-        const reason = sugEl.querySelector('.suggestion-reason')?.textContent || '';
 
-        // Add to active refs
-        activeRefs.push({
-            name: path.split('/').pop(),
-            path: path,
-            data_url: `/api/registry/image/${registryIndex}`,
-            registry_index: registryIndex,
-            reason: reason,
-        });
+// --- Ref Suggestions ---
 
-        renderActiveRefs();
-        syncRefPaths();
+function addRefFromSuggestion(registryIndex, suggestedRole) {
+    var sugEl = document.querySelector('[data-sug-index="' + registryIndex + '"]');
+    if (!sugEl) return;
+
+    var path = sugEl.dataset.path;
+    if (!path) return;
+
+    var role = suggestedRole || sugEl.dataset.suggestedRole || 'style';
+    var titel = sugEl.querySelector('.suggestion-title');
+    titel = titel ? titel.textContent : path.split('/').pop();
+    var reasonEl = sugEl.querySelector('.suggestion-reason');
+    var reason = reasonEl ? reasonEl.textContent : '';
+
+    var added = addRef(role, {
+        name: path.split('/').pop(),
+        path: path,
+        data_url: '/api/registry/image/' + registryIndex,
+        registry_index: registryIndex,
+        reason: reason,
+    });
+
+    if (added) {
         sugEl.classList.add('ref-added');
-        toast(`Ref hinzugefügt: ${titel} (${activeRefs.length} total)`, 'success');
-    } catch (e) {
-        console.error('Ref hinzufügen fehlgeschlagen:', e);
+        toast('Ref \u2192 ' + role + ': ' + titel, 'success');
     }
 }
 
 function renderRefSuggestions(suggestions) {
-    const container = document.getElementById('suggestionsContainer');
-    const section = document.getElementById('suggestionsSection');
+    var container = document.getElementById('suggestionsContainer');
+    var section = document.getElementById('suggestionsSection');
     if (!container || !section) return;
 
-    // Show only suggestions that aren't already active refs
-    const activeNames = new Set(activeRefs.map(r => r.name || r.path?.split('/').pop()));
-
-    container.innerHTML = suggestions.map(sug => {
-        const fileName = sug.datei.split('/').pop();
-        const isActive = activeNames.has(fileName);
-        return `
-            <div class="suggestion-item ${isActive ? 'ref-added' : ''}"
-                 data-sug-index="${sug.index}"
-                 data-path="/Users/alexanderpauckner/Kinderbuch/Comic_Projekt_2025/Dino-Buch/${sug.datei}"
-                 onclick="addRefFromSuggestion(${sug.index})"
-                 title="Score: ${sug.score} — ${sug.reason}">
-                <img src="/api/registry/image/${sug.index}" loading="lazy" alt="${sug.titel}">
-                <div class="suggestion-info">
-                    <span class="suggestion-title">${sug.titel}</span>
-                    <span class="suggestion-reason">${sug.reason}${sug.bewertung ? ' ⭐' + sug.bewertung : ''}</span>
-                </div>
-            </div>
-        `;
+    container.innerHTML = suggestions.map(function(sug) {
+        var fileName = sug.datei.split('/').pop();
+        var roleLabel = sug.suggested_role === 'character' ? 'Char' : 'Style';
+        var roleClass = sug.suggested_role === 'character' ? 'role-character' : 'role-style';
+        return '<div class="suggestion-item" ' +
+            'data-sug-index="' + sug.index + '" ' +
+            'data-path="/Users/alexanderpauckner/Kinderbuch/Comic_Projekt_2025/Dino-Buch/' + sug.datei + '" ' +
+            'data-suggested-role="' + (sug.suggested_role || 'style') + '" ' +
+            'onclick="addRefFromSuggestion(' + sug.index + ', \'' + (sug.suggested_role || 'style') + '\')" ' +
+            'title="Score: ' + sug.score + ' \u2014 ' + sug.reason + '">' +
+            '<img src="/api/registry/image/' + sug.index + '" loading="lazy" alt="' + sug.titel + '">' +
+            '<div class="suggestion-info">' +
+            '<span class="suggestion-title">' + sug.titel + '</span>' +
+            '<span class="suggestion-reason">' + sug.reason +
+            (sug.bewertung ? ' \u2b50' + sug.bewertung : '') + '</span>' +
+            '</div>' +
+            '<span class="suggestion-role ' + roleClass + '">' + roleLabel + '</span>' +
+            '</div>';
     }).join('');
 
     container.style.display = 'block';
@@ -254,74 +324,10 @@ function renderRefSuggestions(suggestions) {
 }
 
 
-// --- Reference Images (directory mode) ---
-
-async function loadRefs() {
-    try {
-        const resp = await fetch('/api/refs');
-        const data = await resp.json();
-
-        const grid = document.getElementById('refGrid');
-        if (data.images.length === 0) {
-            grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:16px;color:var(--text-dim);font-size:12px">Keine Referenzbilder</div>';
-            return;
-        }
-
-        grid.innerHTML = data.images.map(img => `
-            <div class="ref-thumb" title="${img.name} (${img.size_kb} KB)">
-                <img src="${img.data_url}" alt="${img.name}">
-                <button class="ref-delete" onclick="deleteRef('${img.name}')">&times;</button>
-                <span class="ref-name">${img.name}</span>
-            </div>
-        `).join('');
-    } catch (e) {
-        console.error('Refs laden fehlgeschlagen:', e);
-    }
-}
-
-async function deleteRef(name) {
-    await fetch(`/api/refs/${encodeURIComponent(name)}`, { method: 'DELETE' });
-    loadRefs();
-}
-
-async function uploadRefs(files) {
-    for (const file of files) {
-        const formData = new FormData();
-        formData.append('file', file);
-        const resp = await fetch('/api/refs/upload', { method: 'POST', body: formData });
-        const data = await resp.json();
-        if (data.ok) {
-            // Add uploaded file to active refs with preview
-            const reader = new FileReader();
-            reader.onload = () => {
-                activeRefs.push({
-                    name: file.name,
-                    path: `${document.getElementById('refDirInput').value}/${file.name}`,
-                    data_url: reader.result,
-                    size_kb: Math.round(file.size / 1024),
-                });
-                renderActiveRefs();
-                syncRefPaths();
-            };
-            reader.readAsDataURL(file);
-        }
-    }
-    toast(`${files.length} Bild(er) hinzugefügt`, 'success');
-}
-
-async function changeRefDir(dir) {
-    const formData = new FormData();
-    formData.append('dir', dir);
-    await fetch('/api/refs/dir', { method: 'POST', body: formData });
-    activeRefs = [];
-    loadRefs();
-}
-
-
 // --- Output Dir ---
 
 async function changeOutputDir(dir) {
-    const formData = new FormData();
+    var formData = new FormData();
     formData.append('dir', dir);
     await fetch('/api/output/dir', { method: 'POST', body: formData });
     toast('Output-Ordner: ' + dir, 'info');
@@ -335,37 +341,42 @@ async function openOutputDir() {
 // --- Generate ---
 
 async function generate() {
-    const blocks = getBlocks();
-    const prompt = buildPrompt(blocks);
+    var blocks = getBlocks();
+    var prompt = buildPrompt(blocks);
 
     if (!prompt) {
         toast('Kein Prompt vorhanden', 'error');
         return;
     }
 
-    const btn = document.getElementById('generateBtn');
-    const originalText = btn.textContent;
+    var btn = document.getElementById('generateBtn');
+    var originalText = btn.textContent;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Generiere...';
 
-    const resultsContainer = document.getElementById('resultsContainer');
+    var resultsContainer = document.getElementById('resultsContainer');
     resultsContainer.innerHTML = '<div style="padding:20px;text-align:center"><span class="spinner"></span><p style="margin-top:10px;color:var(--text-dim);font-size:12px">Warte auf Gemini API...</p></div>';
 
+    var refPaths = getAllRefPaths();
+    var contextChecked = document.getElementById('contextPrefix').checked;
+
     try {
-        const resp = await fetch('/api/generate', {
+        var resp = await fetch('/api/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 prompt: prompt,
-                ref_instruction: blocks.ref_instruction,
+                refs_style: refPaths.style,
+                refs_character: refPaths.character,
+                refs_scribble: refPaths.scribble,
+                context_prefix: contextChecked,
                 temperature: parseFloat(document.getElementById('temperature').value),
                 variants: parseInt(document.getElementById('variants').value),
                 output_name: document.getElementById('outputName').value,
-                ref_paths: activeRefs.length > 0 ? getActiveRefPaths() : undefined,
             }),
         });
 
-        const data = await resp.json();
+        var data = await resp.json();
 
         if (data.error) {
             toast(data.error, 'error');
@@ -373,30 +384,27 @@ async function generate() {
             return;
         }
 
-        // Render results
         resultsContainer.innerHTML = '';
-        for (const result of data.results) {
+        for (var ri = 0; ri < data.results.length; ri++) {
+            var result = data.results[ri];
             if (result.error) {
-                resultsContainer.innerHTML += `<div style="padding:10px;color:var(--accent);font-size:12px">Variante ${result.variant}: ${result.error}</div>`;
+                resultsContainer.innerHTML += '<div style="padding:10px;color:var(--accent);font-size:12px">Variante ' + result.variant + ': ' + result.error + '</div>';
                 continue;
             }
-            for (const part of result.parts) {
+            for (var pi = 0; pi < result.parts.length; pi++) {
+                var part = result.parts[pi];
                 if (part.type === 'image') {
-                    resultsContainer.innerHTML += `
-                        <div class="result-image">
-                            <img src="${part.data_url}" alt="${part.filename}" onclick="showLightbox(this.src)">
-                            <div class="result-meta">
-                                ${part.filename} &middot; ${part.size_kb} KB &middot; ${result.elapsed}s
-                            </div>
-                        </div>
-                    `;
+                    resultsContainer.innerHTML += '<div class="result-image">' +
+                        '<img src="' + part.data_url + '" alt="' + part.filename + '" onclick="showLightbox(this.src)">' +
+                        '<div class="result-meta">' + part.filename + ' &middot; ' + part.size_kb + ' KB &middot; ' + result.elapsed + 's</div>' +
+                        '</div>';
                 } else if (part.type === 'text') {
-                    resultsContainer.innerHTML += `<div style="padding:8px;font-size:11px;color:var(--text-dim);border-bottom:1px solid var(--border)">${part.content}</div>`;
+                    resultsContainer.innerHTML += '<div style="padding:8px;font-size:11px;color:var(--text-dim);border-bottom:1px solid var(--border)">' + part.content + '</div>';
                 }
             }
         }
 
-        toast(`${data.results.length} Variante(n) generiert — ${data.refs_used} Refs`, 'success');
+        toast(data.results.length + ' Variante(n) generiert \u2014 ' + data.refs_used + ' Refs', 'success');
     } catch (e) {
         toast('Fehler: ' + e.message, 'error');
         resultsContainer.innerHTML = '';
@@ -411,21 +419,21 @@ async function generate() {
 
 async function loadOutputImages() {
     try {
-        const resp = await fetch('/api/output/images');
-        const data = await resp.json();
-        const container = document.getElementById('resultsContainer');
+        var resp = await fetch('/api/output/images');
+        var data = await resp.json();
+        var container = document.getElementById('resultsContainer');
 
         if (data.images.length === 0) {
             container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:12px">Keine Bilder im Output-Ordner</div>';
             return;
         }
 
-        container.innerHTML = data.images.map(img => `
-            <div class="result-image">
-                <img src="/api/output/image/${encodeURIComponent(img.name)}" alt="${img.name}" onclick="showLightbox(this.src)" loading="lazy">
-                <div class="result-meta">${img.name} &middot; ${img.size_kb} KB</div>
-            </div>
-        `).join('');
+        container.innerHTML = data.images.map(function(img) {
+            return '<div class="result-image">' +
+                '<img src="/api/output/image/' + encodeURIComponent(img.name) + '" alt="' + img.name + '" onclick="showLightbox(this.src)" loading="lazy">' +
+                '<div class="result-meta">' + img.name + ' &middot; ' + img.size_kb + ' KB</div>' +
+                '</div>';
+        }).join('');
     } catch (e) {
         console.error('Output-Bilder laden fehlgeschlagen:', e);
     }
@@ -439,7 +447,7 @@ function showLightbox(src) {
     document.getElementById('lightbox').style.display = 'flex';
 }
 
-document.addEventListener('keydown', e => {
+document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
         document.getElementById('lightbox').style.display = 'none';
     }
@@ -453,93 +461,68 @@ function autoResize(ta) {
     ta.style.height = Math.max(80, ta.scrollHeight) + 'px';
 }
 
-document.querySelectorAll('textarea').forEach(ta => {
-    ta.addEventListener('input', () => autoResize(ta));
+document.querySelectorAll('textarea').forEach(function(ta) {
+    ta.addEventListener('input', function() { autoResize(ta); });
 });
 
 
 // --- Drag & Drop for script files ---
 
-const editorPanel = document.getElementById('editorPanel');
-editorPanel.addEventListener('dragover', e => {
+var editorPanel = document.getElementById('editorPanel');
+editorPanel.addEventListener('dragover', function(e) {
     e.preventDefault();
     editorPanel.classList.add('drop-highlight');
 });
-editorPanel.addEventListener('dragleave', () => {
+editorPanel.addEventListener('dragleave', function() {
     editorPanel.classList.remove('drop-highlight');
 });
-editorPanel.addEventListener('drop', e => {
+editorPanel.addEventListener('drop', function(e) {
     e.preventDefault();
     editorPanel.classList.remove('drop-highlight');
-    const file = e.dataTransfer.files[0];
+    var file = e.dataTransfer.files[0];
     if (file && file.name.endsWith('.py')) {
-        const input = document.getElementById('scriptFile');
-        const dt = new DataTransfer();
+        var input = document.getElementById('scriptFile');
+        var dt = new DataTransfer();
         dt.items.add(file);
         input.files = dt.files;
         loadScript();
     }
 });
 
-// Drag & Drop for ref images on right panel
-const refsContainer = document.getElementById('refsContainer');
-refsContainer.addEventListener('dragover', e => {
-    e.preventDefault();
-    refsContainer.classList.add('drop-highlight');
-});
-refsContainer.addEventListener('dragleave', () => {
-    refsContainer.classList.remove('drop-highlight');
-});
-refsContainer.addEventListener('drop', e => {
-    e.preventDefault();
-    refsContainer.classList.remove('drop-highlight');
-    const files = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/'));
-    if (files.length) uploadRefs(files);
-});
-
 
 // --- Toast ---
 
-function toast(msg, type = 'info') {
-    const el = document.createElement('div');
-    el.className = `toast ${type}`;
+function toast(msg, type) {
+    type = type || 'info';
+    var el = document.createElement('div');
+    el.className = 'toast ' + type;
     el.textContent = msg;
     document.body.appendChild(el);
-    setTimeout(() => el.remove(), 3500);
+    setTimeout(function() { el.remove(); }, 3500);
 }
 
 
-// --- Registry Loading (from look-vergleich.html) ---
+// --- Registry Loading ---
 
 async function loadFromRegistry(index) {
     try {
-        const resp = await fetch(`/api/registry/${index}`);
-        const data = await resp.json();
+        var resp = await fetch('/api/registry/' + index);
+        var data = await resp.json();
 
         if (data.error) {
             toast(data.error, 'error');
             return;
         }
 
-        // Use server-side split blocks if available, else fallback to monolithic
+        // Fill V3 blocks
         if (data.blocks) {
-            for (const field of FIELDS) {
-                if (field === 'ref_instruction') continue;
-                const ta = document.querySelector(`textarea[data-field="${field}"]`);
+            for (var i = 0; i < FIELDS.length; i++) {
+                var field = FIELDS[i];
+                var ta = document.querySelector('textarea[data-field="' + field + '"]');
                 if (ta) {
                     ta.value = data.blocks[field] || '';
                     autoResize(ta);
                 }
-            }
-        } else {
-            const sceneTA = document.querySelector('textarea[data-field="scene_block"]');
-            if (sceneTA) {
-                sceneTA.value = data.prompt;
-                autoResize(sceneTA);
-            }
-            for (const field of ['style_header', 'child_char_block', 'brush_guide', 'medium_block', 'negative_block']) {
-                const ta = document.querySelector(`textarea[data-field="${field}"]`);
-                if (ta) { ta.value = ''; autoResize(ta); }
             }
         }
 
@@ -548,73 +531,74 @@ async function loadFromRegistry(index) {
             document.getElementById('outputName').value = data.output_name;
         }
 
-        // Show original image in results
-        const resultsContainer = document.getElementById('resultsContainer');
+        // Show original image
+        var resultsContainer = document.getElementById('resultsContainer');
         if (data.original_image) {
-            const badge = data.bewertung ? `<span style="background:var(--accent);color:white;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600">${data.bewertung}</span>` : '';
-            resultsContainer.innerHTML = `
-                <div style="padding:8px">
-                    <div style="font-size:12px;color:var(--yellow);margin-bottom:6px;font-weight:600">
-                        Original: ${data.titel} ${badge}
-                    </div>
-                    ${data.notiz ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;font-style:italic">${data.notiz}</div>` : ''}
-                </div>
-                <div class="result-image">
-                    <img src="${data.original_image.data_url}" alt="${data.titel}" onclick="showLightbox(this.src)">
-                    <div class="result-meta">
-                        ${data.original_image.name} &middot; ${data.original_image.size_kb} KB &middot; Original
-                    </div>
-                </div>
-            `;
+            var badge = data.bewertung ? '<span style="background:var(--accent);color:white;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600">' + data.bewertung + '</span>' : '';
+            resultsContainer.innerHTML =
+                '<div style="padding:8px">' +
+                '<div style="font-size:12px;color:var(--yellow);margin-bottom:6px;font-weight:600">' +
+                'Original: ' + data.titel + ' ' + badge + '</div>' +
+                (data.notiz ? '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;font-style:italic">' + data.notiz + '</div>' : '') +
+                '</div>' +
+                '<div class="result-image">' +
+                '<img src="' + data.original_image.data_url + '" alt="' + data.titel + '" onclick="showLightbox(this.src)">' +
+                '<div class="result-meta">' + data.original_image.name + ' &middot; ' + data.original_image.size_kb + ' KB &middot; Original</div>' +
+                '</div>';
         }
 
-        // Show ref images — explicit from registry or suggested
-        activeRefs = [];
+        // Load ref images per category (V3 format from backend)
+        refs = { style: [], character: [], scribble: [] };
 
-        if (data.ref_images && data.ref_images.length > 0) {
-            activeRefs = data.ref_images;
-            renderActiveRefs(activeRefs, 'Registry-Refs');
-        } else if (data.suggested_refs && data.suggested_refs.length > 0) {
-            activeRefs = data.suggested_refs;
-            renderActiveRefs(activeRefs, 'Vorgeschlagen');
+        if (data.ref_images) {
+            var roles = ['style', 'character', 'scribble'];
+            for (var ri = 0; ri < roles.length; ri++) {
+                var role = roles[ri];
+                var roleRefs = data.ref_images[role] || [];
+                for (var rj = 0; rj < roleRefs.length; rj++) {
+                    refs[role].push(roleRefs[rj]);
+                }
+            }
         }
 
-        // Show suggestions panel for adding more
+        // If no explicit refs, use suggestions as defaults
+        if (refs.style.length === 0 && refs.character.length === 0 && refs.scribble.length === 0) {
+            if (data.suggested_refs && data.suggested_refs.length > 0) {
+                for (var si = 0; si < data.suggested_refs.length; si++) {
+                    var sug = data.suggested_refs[si];
+                    var sugRole = sug.suggested_role || 'style';
+                    refs[sugRole].push(sug);
+                }
+            }
+        }
+
+        renderAllRefs();
+
+        // Show suggestions panel
         if (data.all_suggestions && data.all_suggestions.length > 0) {
             renderRefSuggestions(data.all_suggestions);
         }
 
-        // Update ref dir display
-        if (data.ref_dir) {
-            document.getElementById('refDirInput').value = data.ref_dir || 'Intelligente Auswahl';
-        } else {
-            document.getElementById('refDirInput').value = 'Intelligente Auswahl (aus Registry)';
-        }
-
-        // Update output dir display
+        // Update output dir
         if (data.output_dir) {
             document.getElementById('outputDirInput').value = data.output_dir;
         }
 
-        // Tell backend about our ref paths
-        syncRefPaths();
-
-        // Set source info in header
-        document.title = `Dino Bildgen — ${data.titel}`;
+        document.title = 'Dino Bildgen \u2014 ' + data.titel;
 
         showBlocks();
         updatePreview();
         autoSave();
-        toast(`Registry geladen: ${data.titel} (${data.sektion})`, 'success');
+        toast('Registry geladen: ' + data.titel + ' (' + data.sektion + ')', 'success');
     } catch (e) {
         toast('Registry-Fehler: ' + e.message, 'error');
     }
 }
 
 function checkHashRoute() {
-    const hash = window.location.hash;
-    if (hash.startsWith('#registry:')) {
-        const index = parseInt(hash.split(':')[1]);
+    var hash = window.location.hash;
+    if (hash.indexOf('#registry:') === 0) {
+        var index = parseInt(hash.split(':')[1]);
         if (!isNaN(index)) {
             loadFromRegistry(index);
         }
@@ -627,52 +611,84 @@ window.addEventListener('hashchange', checkHashRoute);
 // --- Auto-Save (localStorage) ---
 
 function autoSave() {
-    const data = {
+    var data = {
+        version: 3,
         blocks: getBlocks(),
+        refs_style: refs.style,
+        refs_character: refs.character,
+        refs_scribble: refs.scribble,
         outputName: document.getElementById('outputName').value,
         temperature: document.getElementById('temperature').value,
         variants: document.getElementById('variants').value,
-        refDir: document.getElementById('refDirInput').value,
         outputDir: document.getElementById('outputDirInput').value,
-        activeRefs: activeRefs,
+        contextPrefix: document.getElementById('contextPrefix').checked,
         timestamp: Date.now(),
     };
     localStorage.setItem('dino-bildgen-autosave', JSON.stringify(data));
 }
 
+function migrateAutoSaveData(data) {
+    // Migrate V1/V2 blocks to V3
+    if (data.blocks && data.blocks.style_header !== undefined && data.blocks.style === undefined) {
+        var old = data.blocks;
+        data.blocks = {
+            style: [old.style_header, old.brush_guide, old.medium_block].filter(Boolean).join('\n\n'),
+            scene: [old.logline, old.scene_block].filter(Boolean).join('\n\n'),
+            character: old.child_char_block || '',
+            composition: '',
+            negative: old.negative_block || '',
+        };
+    }
+    // Migrate refs
+    if (data.activeRefs && !data.refs_style) {
+        data.refs_style = data.activeRefs;
+        data.refs_character = [];
+        data.refs_scribble = [];
+    }
+    return data;
+}
+
 function autoRestore() {
-    const raw = localStorage.getItem('dino-bildgen-autosave');
+    var raw = localStorage.getItem('dino-bildgen-autosave');
     if (!raw) return false;
     try {
-        const data = JSON.parse(raw);
-        // Only restore if less than 4 hours old
+        var data = JSON.parse(raw);
         if (Date.now() - data.timestamp > 4 * 60 * 60 * 1000) return false;
 
-        for (const field of FIELDS) {
-            const ta = document.querySelector(`textarea[data-field="${field}"]`);
-            if (ta && data.blocks[field]) {
-                ta.value = data.blocks[field];
-                autoResize(ta);
+        data = migrateAutoSaveData(data);
+
+        if (data.blocks) {
+            for (var i = 0; i < FIELDS.length; i++) {
+                var field = FIELDS[i];
+                var ta = document.querySelector('textarea[data-field="' + field + '"]');
+                if (ta && data.blocks[field]) {
+                    ta.value = data.blocks[field];
+                    autoResize(ta);
+                }
             }
         }
+
         if (data.outputName) document.getElementById('outputName').value = data.outputName;
         if (data.temperature) {
             document.getElementById('temperature').value = data.temperature;
             document.getElementById('tempValue').textContent = data.temperature;
         }
         if (data.variants) document.getElementById('variants').value = data.variants;
-        if (data.refDir) document.getElementById('refDirInput').value = data.refDir;
         if (data.outputDir) document.getElementById('outputDirInput').value = data.outputDir;
-        if (data.activeRefs && data.activeRefs.length > 0) {
-            activeRefs = data.activeRefs;
-            renderActiveRefs();
-            syncRefPaths();
+        if (data.contextPrefix !== undefined) {
+            document.getElementById('contextPrefix').checked = data.contextPrefix;
         }
+
+        // Restore refs
+        if (data.refs_style) refs.style = data.refs_style;
+        if (data.refs_character) refs.character = data.refs_character;
+        if (data.refs_scribble) refs.scribble = data.refs_scribble;
+        renderAllRefs();
 
         showBlocks();
         updatePreview();
-        const age = Math.round((Date.now() - data.timestamp) / 60000);
-        toast(`Auto-Save wiederhergestellt (${age} Min alt)`, 'success');
+        var age = Math.round((Date.now() - data.timestamp) / 60000);
+        toast('Auto-Save wiederhergestellt (' + age + ' Min alt)', 'success');
         return true;
     } catch (e) {
         return false;
@@ -680,17 +696,16 @@ function autoRestore() {
 }
 
 // Save on every edit
-document.addEventListener('input', () => autoSave());
+document.addEventListener('input', function() { autoSave(); });
 
 
 // --- Init ---
 
-loadRefs();
 updatePreview();
+renderAllRefs();
 
-// Registry hash has priority, otherwise restore auto-save
-const hash = window.location.hash;
-if (hash.startsWith('#registry:')) {
+var hash = window.location.hash;
+if (hash.indexOf('#registry:') === 0) {
     checkHashRoute();
 } else {
     autoRestore();

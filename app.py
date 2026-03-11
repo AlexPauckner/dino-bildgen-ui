@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Dino-Bildgen-UI — Lokale Web-App für Gemini-Bildgenerierung."""
+"""Dino-Bildgen-UI V3 — Lokale Web-App fuer Gemini-Bildgenerierung.
+
+V3: 5-Block-Schema (STYLE/SCENE/CHARACTER/COMPOSITION/NEGATIVE),
+    3 Ref-Kategorien (Style/Character/Scribble), NB2-optimiert.
+"""
 
 import base64
+import json
 import os
 import re
+import subprocess
 import time
+from datetime import date
 from pathlib import Path
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
@@ -19,103 +27,122 @@ DEFAULT_REF_DIR = Path("/tmp/dino-neue-refs")
 DEFAULT_OUTPUT_DIR = Path(os.path.expanduser(
     "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/NB2-Neue-Arten"
 ))
+REGISTRY_PATH = Path(os.path.expanduser(
+    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/look-registry.json"
+))
+DINO_BUCH_DIR = Path(os.path.expanduser(
+    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch"
+))
+KINDERBUCH_BASE = DINO_BUCH_DIR.parent
 
 # Runtime state
 state = {
     "ref_dir": str(DEFAULT_REF_DIR),
     "output_dir": str(DEFAULT_OUTPUT_DIR),
-    "ref_paths": [],  # Explicit ref file paths (overrides ref_dir when set)
+    "ref_paths": [],
 }
 
+# --- V3 Block Schema ---
+BLOCK_KEYS = ["style", "scene", "character", "composition", "negative"]
 
-# --- Script Parser ---
+LEGACY_KEY_MAP = {
+    "style_header": "style",
+    "logline": "scene",
+    "child_char_block": "character",
+    "scene_block": "scene",
+    "brush_guide": "style",
+    "medium_block": "style",
+    "negative_block": "negative",
+}
 
-# Known block names in the scripts
+REF_INSTRUCTIONS = {
+    "style": (
+        "Use these images as STYLE REFERENCE \u2014 match the oil paint texture, "
+        "impasto brush technique, color warmth, and paint density exactly:"
+    ),
+    "character": (
+        "Use these images as CHARACTER REFERENCE \u2014 preserve exact proportions, "
+        "feather colors, eye shape, and markings. Do not change the character design:"
+    ),
+    "scribble": (
+        "Use this rough SKETCH as COMPOSITION GUIDE \u2014 follow the positioning "
+        "and layout but render everything in the oil paint style described above:"
+    ),
+}
+
+CONTEXT_PREFIX = (
+    "Create an oil painted children's book illustration for a dinosaur "
+    "science book aimed at 3-8 year olds."
+)
+
+IDENTITY_LOCK = (
+    "Preserve exact proportions, feather colors, eye shape, "
+    "and markings from the character reference."
+)
+
+
+# --- Script Parser (V1/V2 compat, unchanged) ---
+
 KNOWN_BLOCKS = [
-    "STYLE_HEADER",
-    "CHILD_CHAR_BLOCK",
-    "BABY_CHAR_BLOCK",
-    "BRUSH_GUIDE",
-    "MEDIUM_BLOCK",
-    "NEGATIVE_BLOCK",
+    "STYLE_HEADER", "CHILD_CHAR_BLOCK", "BABY_CHAR_BLOCK",
+    "BRUSH_GUIDE", "MEDIUM_BLOCK", "NEGATIVE_BLOCK",
 ]
 
-def parse_script(source: str) -> dict:
-    """Parse a Python generation script into named blocks."""
+
+def parse_script(source):
+    # type: (str) -> dict
+    """Parse a Python generation script into named blocks (old format)."""
     blocks = {}
 
-    # Extract triple-quoted variable assignments: VAR = """...""" or VAR = '''...'''
     pattern = r'(\w+)\s*=\s*(?:"""(.*?)"""|\'\'\'(.*?)\'\'\')'
     for match in re.finditer(pattern, source, re.DOTALL):
         name = match.group(1)
         value = match.group(2) if match.group(2) is not None else match.group(3)
         blocks[name] = value.strip()
 
-    # Extract the PROMPT f-string — this is more complex
-    # Look for PROMPT = f"""..."""
-    prompt_match = re.search(
-        r'PROMPT\s*=\s*f"""(.*?)"""', source, re.DOTALL
-    )
+    prompt_match = re.search(r'PROMPT\s*=\s*f"""(.*?)"""', source, re.DOTALL)
     if not prompt_match:
-        prompt_match = re.search(
-            r"PROMPT\s*=\s*f'''(.*?)'''", source, re.DOTALL
-        )
+        prompt_match = re.search(r"PROMPT\s*=\s*f'''(.*?)'''", source, re.DOTALL)
 
     scene_block = ""
     if prompt_match:
         prompt_template = prompt_match.group(1).strip()
-        # Extract the "scene" part — everything between the known block references
-        # Remove {STYLE_HEADER}, {CHILD_CHAR_BLOCK}, etc. and grab what's left
         scene = prompt_template
         for block_name in KNOWN_BLOCKS:
             scene = scene.replace(f"{{{block_name}}}", "<<<BLOCK_MARKER>>>")
-
-        # The scene block is everything between the first and last markers
         parts = scene.split("<<<BLOCK_MARKER>>>")
-        # Filter out empty parts, the meaningful content is usually in the middle
         meaningful = [p.strip() for p in parts if p.strip()]
         scene_block = "\n\n".join(meaningful)
 
-    # Extract ref_instruction if present
-    # Handle multi-line concatenated strings: ref_instruction = (\n"..."\n"..."\n)
-    ref_match = re.search(
-        r'ref_instruction\s*=\s*\((.*?)\)',
-        source, re.DOTALL
-    )
+    ref_match = re.search(r'ref_instruction\s*=\s*\((.*?)\)', source, re.DOTALL)
     if ref_match:
         raw = ref_match.group(1)
-        # Extract all quoted strings and concatenate them
         parts = re.findall(r'"(.*?)"', raw, re.DOTALL)
         blocks["REF_INSTRUCTION"] = "".join(parts)
     else:
         ref_match = re.search(
-            r'ref_instruction\s*=\s*(?:"""(.*?)"""|"(.*?)")',
-            source, re.DOTALL
+            r'ref_instruction\s*=\s*(?:"""(.*?)"""|"(.*?)")', source, re.DOTALL
         )
         if ref_match:
             blocks["REF_INSTRUCTION"] = (ref_match.group(1) or ref_match.group(2) or "").strip()
 
-    # Extract output dir
     out_match = re.search(r'OUTPUT_DIR\s*=\s*Path\([^"]*"([^"]+)"', source)
     if out_match:
         blocks["_OUTPUT_DIR"] = os.path.expanduser(out_match.group(1))
 
-    # Extract ref dir
     ref_match2 = re.search(r'REF_DIR\s*=\s*Path\([^"]*"([^"]+)"', source)
     if ref_match2:
         blocks["_REF_DIR"] = os.path.expanduser(ref_match2.group(1))
 
-    # Extract temperature
     temp_match = re.search(r'temperature\s*=\s*([\d.]+)', source)
     if temp_match:
         blocks["_TEMPERATURE"] = float(temp_match.group(1))
 
-    # Extract number of variants (range(N))
     range_match = re.search(r'range\((\d+)\)', source)
     if range_match:
         blocks["_VARIANTS"] = int(range_match.group(1))
 
-    result = {
+    return {
         "style_header": blocks.get("STYLE_HEADER", ""),
         "logline": "",
         "child_char_block": blocks.get("CHILD_CHAR_BLOCK", blocks.get("BABY_CHAR_BLOCK", "")),
@@ -123,101 +150,136 @@ def parse_script(source: str) -> dict:
         "brush_guide": blocks.get("BRUSH_GUIDE", ""),
         "medium_block": blocks.get("MEDIUM_BLOCK", ""),
         "negative_block": blocks.get("NEGATIVE_BLOCK", ""),
-        "ref_instruction": blocks.get("REF_INSTRUCTION",
-            "Use these images as STYLE REFERENCE for the oil painting texture and "
-            "impasto brush strokes. Match the THICK paint texture from the style references. "
-            "MAXIMIZE the visible brush strokes and paint texture — make it look like a real oil painting. "
-            "Generate the following CHARACTER SHEET:\n\n"
-        ),
+        "ref_instruction": blocks.get("REF_INSTRUCTION", ""),
         "temperature": blocks.get("_TEMPERATURE", 1.0),
         "variants": blocks.get("_VARIANTS", 1),
         "output_dir": blocks.get("_OUTPUT_DIR", str(DEFAULT_OUTPUT_DIR)),
         "ref_dir": blocks.get("_REF_DIR", str(DEFAULT_REF_DIR)),
     }
-    return result
 
 
-def split_prompt_into_blocks(prompt: str) -> dict:
-    """Intelligently split a monolithic prompt into named blocks.
+# --- Prompt Splitting (V3) ---
 
-    Recognizes known patterns by scanning line-by-line:
-    - Style header: "Oil painted..." opening section
-    - Child char block: "Child proportions..." section
-    - Brush guide: "Brush stroke guide..." section (multi-line with - bullets)
-    - Medium block: "Medium: oil..." line
-    - Negative block: "No photorealism..." line
-    - Everything else: scene_block
+def split_prompt_into_blocks(prompt):
+    # type: (str) -> dict
+    """Split a prompt into 5 named blocks using keyword + legacy detection.
+
+    Primary: STYLE:/SCENE:/CHARACTER:/COMPOSITION:/NEGATIVE: keywords.
+    Legacy: Oil paint.../Child proportions.../Brush stroke guide:/Medium:/No photorealism...
     """
-    blocks = {
-        "style_header": "",
-        "logline": "",
-        "child_char_block": "",
-        "scene_block": "",
-        "brush_guide": "",
-        "medium_block": "",
-        "negative_block": "",
-    }
-
+    block_lines = {k: [] for k in BLOCK_KEYS}
     lines = prompt.strip().split('\n')
-    current_block = None  # which block we're appending to
-    block_lines = {k: [] for k in blocks}
+    current_block = None
 
     for line in lines:
         stripped = line.strip()
+        detected = None
 
-        # Detect block starts
-        if re.match(r'^Oil paint', stripped, re.IGNORECASE) and not block_lines["style_header"]:
-            current_block = "style_header"
-            block_lines[current_block].append(line)
-        elif re.match(r'^SCENE:', stripped) and not block_lines["logline"]:
-            current_block = "logline"
-            block_lines[current_block].append(line)
-        elif re.match(r'^Child proportions', stripped, re.IGNORECASE) and not block_lines["child_char_block"]:
-            current_block = "child_char_block"
-            block_lines[current_block].append(line)
-        elif re.match(r'^(COMPOSITION|EMOTION|LIGHTING|FORMAT|Brush stroke)', stripped, re.IGNORECASE) and current_block != "brush_guide":
-            # These are scene/composition sub-sections
-            if re.match(r'^Brush stroke guide', stripped, re.IGNORECASE):
-                current_block = "brush_guide"
-            else:
-                current_block = "scene_block"
-            block_lines[current_block].append(line)
+        # Primary V3 keywords
+        if re.match(r'^STYLE:', stripped):
+            detected = "style"
+        elif re.match(r'^SCENE:', stripped):
+            detected = "scene"
+        elif re.match(r'^CHARACTER:', stripped):
+            detected = "character"
+        elif re.match(r'^COMPOSITION:', stripped):
+            detected = "composition"
+        elif re.match(r'^(NEGATIVE|CONSTRAINTS):', stripped):
+            detected = "negative"
+        # Legacy V1/V2 patterns
+        elif re.match(r'^(Oil paint|REAL oil paint)', stripped, re.IGNORECASE) and not block_lines["style"]:
+            detected = "style"
+        elif re.match(r'^Child proportions', stripped, re.IGNORECASE) and not block_lines["character"]:
+            detected = "character"
+        elif re.match(r'^Brush stroke guide', stripped, re.IGNORECASE):
+            detected = "style"
         elif re.match(r'^Medium:', stripped, re.IGNORECASE):
-            current_block = "medium_block"
-            block_lines[current_block].append(line)
+            detected = "style"
+        elif re.match(r'^SURFACE', stripped, re.IGNORECASE):
+            detected = "style"
+        elif re.match(r'^(EMOTION|LIGHTING|FORMAT):', stripped, re.IGNORECASE):
+            detected = "composition"
         elif re.match(r'^No photorealism', stripped, re.IGNORECASE):
-            current_block = "negative_block"
-            block_lines[current_block].append(line)
-        elif stripped == '' and current_block in ("style_header", "logline", "child_char_block", "medium_block", "negative_block"):
-            # Empty line after a single-paragraph block → back to scene
-            current_block = "scene_block"
-            block_lines[current_block].append(line)
-        elif stripped == '' and current_block == "brush_guide":
-            current_block = "scene_block"
+            detected = "negative"
+
+        if detected is not None:
+            current_block = detected
             block_lines[current_block].append(line)
         elif current_block is not None:
             block_lines[current_block].append(line)
         else:
-            block_lines["scene_block"].append(line)
+            block_lines["scene"].append(line)
 
-    # Join lines back into strings, strip leading/trailing whitespace
-    for key in blocks:
-        blocks[key] = '\n'.join(block_lines[key]).strip()
-
-    return blocks
+    return {k: '\n'.join(block_lines[k]).strip() for k in BLOCK_KEYS}
 
 
-def build_prompt(blocks: dict) -> str:
-    """Assemble the full prompt from blocks.
-
-    Order: Style → Logline → Character → Scene/Composition → Brush → Medium → Negative
-    """
+def build_prompt(blocks):
+    # type: (dict) -> str
+    """Assemble full prompt from V3 5-block format."""
     parts = []
-    for key in ["style_header", "logline", "child_char_block", "scene_block",
-                "brush_guide", "medium_block", "negative_block"]:
-        if blocks.get(key):
-            parts.append(blocks[key])
+    for key in BLOCK_KEYS:
+        val = blocks.get(key, "")
+        if val:
+            parts.append(val)
     return "\n\n".join(parts)
+
+
+def _map_legacy_blocks(data):
+    # type: (dict) -> dict
+    """Map old V1/V2 block keys to V3 keys, merging duplicates."""
+    # Already V3?
+    if any(data.get(k) for k in BLOCK_KEYS):
+        return {k: data.get(k, "") for k in BLOCK_KEYS}
+    # Map legacy
+    merge = {k: [] for k in BLOCK_KEYS}
+    for old_key, new_key in LEGACY_KEY_MAP.items():
+        val = data.get(old_key, "")
+        if val:
+            merge[new_key].append(val)
+    return {k: "\n\n".join(merge[k]) for k in BLOCK_KEYS}
+
+
+def _extract_paths(ref_list):
+    # type: (list) -> list
+    """Extract path strings from mixed format ref lists."""
+    paths = []
+    for r in ref_list:
+        if isinstance(r, str):
+            paths.append(r)
+        elif isinstance(r, dict):
+            p = r.get("path", "")
+            if p:
+                paths.append(p)
+    return [p for p in paths if p]
+
+
+def _make_relative(paths, base=None):
+    # type: (list, Optional[Path]) -> list
+    """Make paths relative to base directory."""
+    if base is None:
+        base = KINDERBUCH_BASE
+    result = []
+    for p in paths:
+        p = Path(p)
+        try:
+            result.append(str(p.relative_to(base)))
+        except ValueError:
+            result.append(p.name)
+    return result
+
+
+def _parse_registry_refs(refs_raw):
+    # type: (object) -> dict
+    """Parse registry referenzbilder field (handles old flat list + new dict)."""
+    if isinstance(refs_raw, list):
+        return {"style": refs_raw, "character": [], "scribble": []}
+    elif isinstance(refs_raw, dict):
+        return {
+            "style": refs_raw.get("style", []),
+            "character": refs_raw.get("character", []),
+            "scribble": refs_raw.get("scribble", []),
+        }
+    return {"style": [], "character": [], "scribble": []}
 
 
 # --- API Endpoints ---
@@ -232,13 +294,22 @@ app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), na
 
 @app.post("/api/parse-script")
 async def api_parse_script(file: UploadFile = File(...)):
-    """Parse an uploaded Python script into blocks."""
+    """Parse an uploaded Python script into V3 blocks."""
     content = await file.read()
     source = content.decode("utf-8", errors="replace")
-    result = parse_script(source)
-    # Update state dirs
-    state["ref_dir"] = result["ref_dir"]
-    state["output_dir"] = result["output_dir"]
+    old_result = parse_script(source)
+
+    # Map to V3 blocks
+    v3_blocks = _map_legacy_blocks(old_result)
+
+    state["ref_dir"] = old_result["ref_dir"]
+    state["output_dir"] = old_result["output_dir"]
+
+    result = dict(v3_blocks)
+    result["temperature"] = old_result["temperature"]
+    result["variants"] = old_result["variants"]
+    result["output_dir"] = old_result["output_dir"]
+    result["ref_dir"] = old_result["ref_dir"]
     return JSONResponse(result)
 
 
@@ -257,7 +328,7 @@ async def api_list_refs():
             images.append({
                 "name": f.name,
                 "size_kb": f.stat().st_size // 1024,
-                "data_url": f"data:{mime};base64,{data}",
+                "data_url": "data:%s;base64,%s" % (mime, data),
             })
     return JSONResponse({"images": images, "dir": str(ref_dir)})
 
@@ -287,13 +358,13 @@ async def api_set_ref_dir(dir: str = Form(...)):
     """Change the reference images directory."""
     expanded = os.path.expanduser(dir)
     state["ref_dir"] = expanded
-    state["ref_paths"] = []  # Clear explicit paths when switching to dir mode
+    state["ref_paths"] = []
     return JSONResponse({"ok": True, "dir": expanded})
 
 
 @app.post("/api/refs/set-paths")
 async def api_set_ref_paths(request: Request):
-    """Set explicit reference image paths (from registry suggestions)."""
+    """Set explicit reference image paths."""
     body = await request.json()
     paths = body.get("paths", [])
     state["ref_paths"] = [p for p in paths if Path(p).exists()]
@@ -310,49 +381,97 @@ async def api_set_output_dir(dir: str = Form(...)):
 
 @app.post("/api/generate")
 async def api_generate(request: Request):
-    """Generate image via Gemini API."""
+    """Generate image via Gemini API (V3: role-based refs)."""
     body = await request.json()
 
     prompt_text = body.get("prompt", "")
-    ref_instruction = body.get("ref_instruction", "")
     temperature = float(body.get("temperature", 1.0))
     variants = int(body.get("variants", 1))
     output_name = body.get("output_name", "generated")
+    context_prefix = body.get("context_prefix", False)
 
     if not prompt_text:
         return JSONResponse({"error": "Kein Prompt angegeben"}, status_code=400)
 
-    # Load API key
     if not API_KEY_PATH.exists():
-        return JSONResponse({"error": f"API Key nicht gefunden: {API_KEY_PATH}"}, status_code=500)
+        return JSONResponse({"error": "API Key nicht gefunden: %s" % API_KEY_PATH}, status_code=500)
     api_key = API_KEY_PATH.read_text().strip()
 
-    # Load reference images
     from google import genai
     from google.genai import types
-
     client = genai.Client(api_key=api_key)
 
-    # Load reference images — prefer explicit paths, fallback to directory
-    ref_images = []
-    ref_file_paths = body.get("ref_paths", state.get("ref_paths", []))
-    if ref_file_paths:
-        for rp in ref_file_paths:
+    def load_ref_images(paths):
+        images = []
+        for rp in paths:
             rp = Path(rp)
             if rp.exists() and rp.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
                 data = rp.read_bytes()
                 mime = "image/png" if rp.suffix.lower() == ".png" else "image/jpeg"
-                ref_images.append(types.Part.from_bytes(data=data, mime_type=mime))
-    else:
-        ref_dir = Path(state["ref_dir"])
-        if ref_dir.exists():
-            for ref_file in sorted(ref_dir.glob("*")):
-                if ref_file.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
-                    data = ref_file.read_bytes()
-                    mime = "image/png" if ref_file.suffix.lower() == ".png" else "image/jpeg"
-                    ref_images.append(types.Part.from_bytes(data=data, mime_type=mime))
+                images.append(types.Part.from_bytes(data=data, mime_type=mime))
+        return images
 
-    contents = list(ref_images) + [ref_instruction + prompt_text]
+    # --- Detect legacy vs V3 format ---
+    is_legacy = "ref_instruction" in body and "refs_style" not in body
+
+    if is_legacy:
+        # V2 compat: flat refs + ref_instruction prefix
+        ref_instruction = body.get("ref_instruction", "")
+        legacy_paths = body.get("ref_paths", state.get("ref_paths", []))
+        ref_images = load_ref_images(legacy_paths) if legacy_paths else []
+        if not ref_images:
+            ref_dir = Path(state["ref_dir"])
+            if ref_dir.exists():
+                for ref_file in sorted(ref_dir.glob("*")):
+                    if ref_file.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+                        data = ref_file.read_bytes()
+                        mime = "image/png" if ref_file.suffix.lower() == ".png" else "image/jpeg"
+                        ref_images.append(types.Part.from_bytes(data=data, mime_type=mime))
+        contents = list(ref_images) + [ref_instruction + prompt_text]
+        total_refs = len(ref_images)
+        ref_paths_for_registry = legacy_paths or []
+    else:
+        # V3: role-based refs
+        style_paths = _extract_paths(body.get("refs_style", []))
+        char_paths = _extract_paths(body.get("refs_character", []))
+        scribble_paths = _extract_paths(body.get("refs_scribble", []))
+
+        # Legacy fallback: ref_paths → style
+        if not any([style_paths, char_paths, scribble_paths]):
+            legacy = body.get("ref_paths", [])
+            if legacy:
+                style_paths = legacy
+
+        style_refs = load_ref_images(style_paths)
+        char_refs = load_ref_images(char_paths)
+        scribble_refs = load_ref_images(scribble_paths)
+
+        # Build role-based contents
+        contents = []
+        if style_refs:
+            contents.append(REF_INSTRUCTIONS["style"])
+            contents.extend(style_refs)
+        if char_refs:
+            contents.append(REF_INSTRUCTIONS["character"])
+            contents.extend(char_refs)
+        if scribble_refs:
+            contents.append(REF_INSTRUCTIONS["scribble"])
+            contents.extend(scribble_refs)
+
+        # Build generation prompt (context + identity lock are generation-time only)
+        gen_prompt = prompt_text
+        if context_prefix:
+            gen_prompt = CONTEXT_PREFIX + "\n\n" + gen_prompt
+        if char_refs:
+            gen_prompt += "\n\n" + IDENTITY_LOCK
+
+        contents.append(gen_prompt)
+        total_refs = len(style_refs) + len(char_refs) + len(scribble_refs)
+        ref_paths_for_registry = {
+            "style": style_paths,
+            "character": char_paths,
+            "scribble": scribble_paths,
+        }
 
     output_dir = Path(state["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -378,13 +497,12 @@ async def api_generate(request: Request):
                     ext = part.inline_data.mime_type.split("/")[-1]
                     if ext == "jpeg":
                         ext = "jpg"
-                    suffix = f"_v{i+1}" if variants > 1 else ""
-                    filename = f"{output_name}{suffix}.{ext}"
+                    suffix = "_v%d" % (i + 1) if variants > 1 else ""
+                    filename = "%s%s.%s" % (output_name, suffix, ext)
                     out_path = output_dir / filename
-                    # Never overwrite — auto-increment
                     counter = 2
                     while out_path.exists():
-                        filename = f"{output_name}{suffix}_{counter}.{ext}"
+                        filename = "%s%s_%d.%s" % (output_name, suffix, counter, ext)
                         out_path = output_dir / filename
                         counter += 1
                     out_path.write_bytes(part.inline_data.data)
@@ -396,7 +514,7 @@ async def api_generate(request: Request):
                         "size_kb": len(part.inline_data.data) // 1024,
                         "filename": filename,
                         "saved_to": str(out_path),
-                        "data_url": f"data:{part.inline_data.mime_type};base64,{img_b64}",
+                        "data_url": "data:%s;base64,%s" % (part.inline_data.mime_type, img_b64),
                     })
                 elif part.text:
                     variant_result["parts"].append({
@@ -405,18 +523,13 @@ async def api_generate(request: Request):
                     })
 
             results.append(variant_result)
-
         except Exception as e:
-            results.append({
-                "variant": i + 1,
-                "error": str(e),
-            })
+            results.append({"variant": i + 1, "error": str(e)})
 
-        # Rate limit pause between variants
         if i < variants - 1:
             time.sleep(16)
 
-    # Add generated images to registry + rebuild HTML
+    # Add to registry + rebuild HTML
     for result_item in results:
         if "error" in result_item:
             continue
@@ -425,10 +538,10 @@ async def api_generate(request: Request):
                 _add_to_registry(
                     datei=part_item["saved_to"],
                     titel=output_name,
-                    prompt=prompt_text,
-                    ref_paths=ref_file_paths if ref_file_paths else [],
+                    prompt=prompt_text,  # Pure prompt without context/identity lock
+                    ref_paths_categorized=ref_paths_for_registry,
                     temperature=temperature,
-                    refs_count=len(ref_images),
+                    refs_count=total_refs,
                 )
     _rebuild_html()
 
@@ -436,7 +549,7 @@ async def api_generate(request: Request):
         "ok": True,
         "results": results,
         "output_dir": str(output_dir),
-        "refs_used": len(ref_images),
+        "refs_used": total_refs,
     })
 
 
@@ -457,7 +570,7 @@ async def api_list_output_images():
         return JSONResponse({"images": [], "dir": str(output_dir)})
 
     images = []
-    for f in sorted(output_dir.glob("charsheet-*"), key=lambda p: p.stat().st_mtime, reverse=True):
+    for f in sorted(output_dir.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
         if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
             images.append({
                 "name": f.name,
@@ -477,35 +590,38 @@ async def api_get_output_image(filename: str):
     return FileResponse(path)
 
 
-import json as json_mod
-import subprocess
+# --- Registry ---
 
-
-def _add_to_registry(datei: str, titel: str, prompt: str,
-                     ref_paths: list, temperature: float, refs_count: int):
-    """Add a generated image to look-registry.json."""
+def _add_to_registry(datei, titel, prompt, ref_paths_categorized, temperature, refs_count):
+    # type: (str, str, str, object, float, int) -> None
+    """Add a generated image to look-registry.json (V3: categorized refs)."""
     try:
-        data = json_mod.loads(REGISTRY_PATH.read_text())
+        data = json.loads(REGISTRY_PATH.read_text())
     except Exception:
         return
 
-    # Make path relative to DINO_BUCH_DIR
     datei_path = Path(datei)
     try:
         rel = datei_path.relative_to(DINO_BUCH_DIR)
     except ValueError:
         rel = datei_path.name
 
-    # Make ref paths relative to KINDERBUCH_BASE
-    rel_refs = []
-    for rp in ref_paths:
-        rp = Path(rp)
-        try:
-            rel_refs.append(str(rp.relative_to(KINDERBUCH_BASE)))
-        except ValueError:
-            rel_refs.append(rp.name)
+    # Handle both legacy (list) and V3 (dict) ref formats
+    if isinstance(ref_paths_categorized, list):
+        rel_refs = {
+            "style": _make_relative(ref_paths_categorized),
+            "character": [],
+            "scribble": [],
+        }
+    elif isinstance(ref_paths_categorized, dict):
+        rel_refs = {
+            "style": _make_relative(ref_paths_categorized.get("style", [])),
+            "character": _make_relative(ref_paths_categorized.get("character", [])),
+            "scribble": _make_relative(ref_paths_categorized.get("scribble", [])),
+        }
+    else:
+        rel_refs = {"style": [], "character": [], "scribble": []}
 
-    from datetime import date
     entry = {
         "datei": str(rel),
         "titel": titel,
@@ -513,14 +629,14 @@ def _add_to_registry(datei: str, titel: str, prompt: str,
         "tool": "Bildgen-UI",
         "modell": "gemini-3.1-flash-image-preview",
         "prompt": prompt,
-        "parameter": f"{refs_count} Refs, temp {temperature}",
+        "parameter": "%d Refs, temp %s" % (refs_count, temperature),
         "bewertung": "",
         "session": str(date.today()),
-        "notiz": f"Via Bildgen-UI generiert",
+        "notiz": "Via Bildgen-UI V3 generiert",
         "referenzbilder": rel_refs,
     }
     data["bilder"].append(entry)
-    REGISTRY_PATH.write_text(json_mod.dumps(data, ensure_ascii=False, indent=2))
+    REGISTRY_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def _rebuild_html():
@@ -536,20 +652,9 @@ def _rebuild_html():
         pass
 
 
-REGISTRY_PATH = Path(os.path.expanduser(
-    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/look-registry.json"
-))
-DINO_BUCH_DIR = Path(os.path.expanduser(
-    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch"
-))
-# Ref images use paths relative to the parent (Comic_Projekt_2025/)
-KINDERBUCH_BASE = DINO_BUCH_DIR.parent
-
-
 @app.get("/api/registry")
 async def api_list_registry():
-    """List all entries in look-registry.json (titles + indices)."""
-    import json
+    """List all entries in look-registry.json."""
     if not REGISTRY_PATH.exists():
         return JSONResponse({"error": "Registry nicht gefunden"}, status_code=404)
     data = json.loads(REGISTRY_PATH.read_text())
@@ -565,7 +670,8 @@ async def api_list_registry():
     return JSONResponse({"entries": entries, "total": len(entries)})
 
 
-def _load_image_as_thumb(path: Path, max_width: int = 300):
+def _load_image_as_thumb(path):
+    # type: (Path) -> Optional[dict]
     """Load an image file, return as base64 thumbnail dict."""
     if not path.exists():
         return None
@@ -575,42 +681,29 @@ def _load_image_as_thumb(path: Path, max_width: int = 300):
         "name": path.name,
         "path": str(path),
         "size_kb": len(data) // 1024,
-        "data_url": f"data:{mime};base64,{base64.b64encode(data).decode()}",
+        "data_url": "data:%s;base64,%s" % (mime, base64.b64encode(data).decode()),
     }
 
 
-def _extract_dino_name(titel: str) -> str:
-    """Extract the dino species name from a title.
-
-    'Baby Ornithomimus Charsheet V1' → 'ornithomimus'
-    'Ornithomimus-Kolonie Panorama V1' → 'ornithomimus'
-    'Velociraptor Portrait' → 'velociraptor'
-    """
-    # Remove common prefixes/suffixes
+def _extract_dino_name(titel):
+    # type: (str) -> str
+    """Extract dino species name from a title."""
     cleaned = titel.lower()
-    for word in ["baby", "adult", "männchen", "weibchen", "charsheet",
-                 "panorama", "kolonie", "portrait", "ganzkoerper", "ganzkörper",
+    for word in ["baby", "adult", "m\u00e4nnchen", "weibchen", "charsheet",
+                 "panorama", "kolonie", "portrait", "ganzkoerper", "ganzk\u00f6rper",
                  "jagd", "fluss", "seite", "frontal", "laufen", "rennt",
                  "v1", "v2", "v3", "v4", "v5", "revidiert", "final",
-                 "frisch geschlüpft", "braun/tarnung", "soft camouflage",
+                 "frisch geschl\u00fcpft", "braun/tarnung", "soft camouflage",
                  "extravagante balz-federn", "cyan", "korrekturen", "4k 21:9",
-                 "weiss", "hintergrund", "—", "-", "(", ")"]:
+                 "weiss", "hintergrund", "\u2014", "-", "(", ")"]:
         cleaned = cleaned.replace(word, " ")
-    # Take the longest remaining word (likely the species name)
     words = [w.strip() for w in cleaned.split() if len(w.strip()) > 3]
     return words[0] if words else ""
 
 
-def suggest_refs_for_entry(all_entries: list, current_index: int) -> list:
-    """Suggest the best reference images for a registry entry.
-
-    Strategy:
-    1. Same dino species → highest priority (charsheets > scenes)
-    2. TOP6 rated images → good style references
-    3. Same sektion → related images
-    Excludes the current image itself.
-    Returns list of {index, titel, datei, score, reason} sorted by score.
-    """
+def suggest_refs_for_entry(all_entries, current_index):
+    # type: (list, int) -> list
+    """Suggest best reference images for a registry entry with role hints."""
     current = all_entries[current_index]
     current_dino = _extract_dino_name(current.get("titel", ""))
     current_sektion = current.get("sektion", "")
@@ -625,41 +718,43 @@ def suggest_refs_for_entry(all_entries: list, current_index: int) -> list:
         titel = entry.get("titel", "").lower()
         datei = entry.get("datei", "")
 
-        # Same dino species — highest priority
         if current_dino and entry_dino and current_dino == entry_dino:
             score += 100
             reasons.append("gleicher Dino")
-            # Charsheets are better refs than scenes
             if "charsheet" in datei.lower():
                 score += 30
                 reasons.append("Charsheet")
-            # Prefer approved/final versions
             if "final" in titel or "v3" in titel:
                 score += 10
                 reasons.append("Final")
 
-        # TOP6 rated — good style benchmark
         if entry.get("bewertung") == "TOP6":
             score += 50
             reasons.append("TOP6")
 
-        # Same sektion
         if current_sektion and entry.get("sektion") == current_sektion:
             score += 20
             reasons.append("gleiche Sektion")
 
-        # Charsheets are generally better refs
         if "charsheet" in datei.lower() and score > 0:
             score += 5
 
         if score > 0:
+            # Suggest role based on scoring reason
+            reason_str = ", ".join(reasons)
+            if "charsheet" in reason_str.lower() or "gleicher dino" in reason_str.lower():
+                suggested_role = "character"
+            else:
+                suggested_role = "style"
+
             suggestions.append({
                 "index": i,
                 "titel": entry.get("titel", ""),
                 "datei": datei,
                 "bewertung": entry.get("bewertung", ""),
                 "score": score,
-                "reason": ", ".join(reasons),
+                "reason": reason_str,
+                "suggested_role": suggested_role,
             })
 
     suggestions.sort(key=lambda x: x["score"], reverse=True)
@@ -668,48 +763,52 @@ def suggest_refs_for_entry(all_entries: list, current_index: int) -> list:
 
 @app.get("/api/registry/{index}")
 async def api_load_registry(index: int):
-    """Load a specific entry from look-registry.json into the editor."""
-    import json
+    """Load a registry entry into the editor (V3: categorized refs)."""
     if not REGISTRY_PATH.exists():
         return JSONResponse({"error": "Registry nicht gefunden"}, status_code=404)
     data = json.loads(REGISTRY_PATH.read_text())
     if index < 0 or index >= len(data["bilder"]):
-        return JSONResponse({"error": f"Index {index} nicht vorhanden"}, status_code=404)
+        return JSONResponse({"error": "Index %d nicht vorhanden" % index}, status_code=404)
 
     entry = data["bilder"][index]
     prompt = entry.get("prompt", "")
-    refs = entry.get("referenzbilder", [])
+    refs_raw = entry.get("referenzbilder", [])
 
-    # Split the monolithic prompt into named blocks
+    # Split prompt into V3 blocks
     blocks = split_prompt_into_blocks(prompt)
 
-    # Load the original image as base64 for preview
+    # Load original image
     original_image = None
     img_path = DINO_BUCH_DIR / entry.get("datei", "")
     if img_path.exists():
         original_image = _load_image_as_thumb(img_path)
 
-    # Resolve explicit ref image paths from registry
-    ref_images = []
-    ref_dir_resolved = None
-    for ref_path_str in refs:
-        ref_path = KINDERBUCH_BASE / ref_path_str
-        if not ref_path.exists():
-            ref_path = DINO_BUCH_DIR / ref_path_str
-        if ref_path.exists():
-            if not ref_dir_resolved:
-                ref_dir_resolved = str(ref_path.parent)
-            thumb = _load_image_as_thumb(ref_path)
-            if thumb:
-                ref_images.append(thumb)
+    # Parse refs (handles both old flat list and new categorized dict)
+    refs_categorized = _parse_registry_refs(refs_raw)
 
-    # Intelligent ref suggestions from the registry
+    # Load ref images per category
+    ref_images = {"style": [], "character": [], "scribble": []}
+    ref_dir_resolved = None
+    for role in ["style", "character", "scribble"]:
+        for ref_path_str in refs_categorized.get(role, []):
+            ref_path = KINDERBUCH_BASE / ref_path_str
+            if not ref_path.exists():
+                ref_path = DINO_BUCH_DIR / ref_path_str
+            if ref_path.exists():
+                if not ref_dir_resolved:
+                    ref_dir_resolved = str(ref_path.parent)
+                thumb = _load_image_as_thumb(ref_path)
+                if thumb:
+                    ref_images[role].append(thumb)
+
+    has_any_refs = any(ref_images[r] for r in ref_images)
+
+    # Intelligent suggestions
     suggestions = suggest_refs_for_entry(data["bilder"], index)
 
-    # Auto-select top refs if registry has none explicitly listed
+    # Auto-select top refs if none explicitly listed
     suggested_refs = []
-    if not ref_images:
-        # Load the top suggested images as refs (max 8)
+    if not has_any_refs:
         for sug in suggestions[:8]:
             sug_path = DINO_BUCH_DIR / sug["datei"]
             thumb = _load_image_as_thumb(sug_path)
@@ -717,13 +816,13 @@ async def api_load_registry(index: int):
                 thumb["reason"] = sug["reason"]
                 thumb["score"] = sug["score"]
                 thumb["registry_index"] = sug["index"]
+                thumb["suggested_role"] = sug.get("suggested_role", "style")
                 suggested_refs.append(thumb)
 
-    # Determine output dir from the image path
+    # Determine output dir
     output_dir = str(img_path.parent) if img_path.exists() else str(DEFAULT_OUTPUT_DIR)
     output_name = img_path.stem if img_path.exists() else "generated"
 
-    # Update server state with registry entry's dirs
     state["output_dir"] = output_dir
     if ref_dir_resolved:
         state["ref_dir"] = ref_dir_resolved
@@ -739,7 +838,7 @@ async def api_load_registry(index: int):
         "original_image": original_image,
         "ref_images": ref_images,
         "suggested_refs": suggested_refs,
-        "all_suggestions": suggestions[:20],  # For the picker UI
+        "all_suggestions": suggestions[:20],
         "ref_dir": ref_dir_resolved,
         "output_dir": output_dir,
         "output_name": output_name,
@@ -750,8 +849,7 @@ async def api_load_registry(index: int):
 
 @app.get("/api/registry/image/{index}")
 async def api_registry_image(index: int):
-    """Serve a registry image by index (for the ref picker)."""
-    import json
+    """Serve a registry image by index."""
     if not REGISTRY_PATH.exists():
         return JSONResponse({"error": "Nicht gefunden"}, status_code=404)
     data = json.loads(REGISTRY_PATH.read_text())
@@ -765,6 +863,6 @@ async def api_registry_image(index: int):
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n  🦕 Dino-Bildgen-UI")
-    print(f"  http://localhost:8080\n")
+    print("\n  Dino-Bildgen-UI V3")
+    print("  http://localhost:8080\n")
     uvicorn.run(app, host="0.0.0.0", port=8080)

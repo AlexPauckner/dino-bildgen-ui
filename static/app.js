@@ -403,8 +403,9 @@ async function generate() {
                     var upscaleBtn = upscaylAvailable
                         ? '<button class="btn btn-secondary btn-small upscale-btn" onclick="upscaleImage(this, \'' + part.saved_to.replace(/'/g, "\\'") + '\')">Upscale 2K</button>'
                         : '';
+                    var fullResUrl = '/api/image?path=' + encodeURIComponent(part.saved_to);
                     resultsContainer.innerHTML += '<div class="result-image">' +
-                        '<img src="' + part.data_url + '" alt="' + part.filename + '" onclick="showLightbox(this.src)">' +
+                        '<img src="' + part.data_url + '" alt="' + part.filename + '" onclick="showLightbox(\'' + fullResUrl + '\')">' +
                         '<div class="result-meta"><span>' + part.filename + ' &middot; ' + part.size_kb + ' KB &middot; ' + result.elapsed + 's</span>' + upscaleBtn + '</div>' +
                         '</div>';
                 } else if (part.type === 'text') {
@@ -441,8 +442,9 @@ async function loadOutputImages() {
             var upBtn = upscaylAvailable && !img.name.match(/_upscayl\d+k/)
                 ? '<button class="btn btn-secondary btn-small upscale-btn" onclick="upscaleImage(this, \'' + img.path.replace(/'/g, "\\'") + '\')">Upscale 2K</button>'
                 : '';
+            var imgFullRes = '/api/image?path=' + encodeURIComponent(img.path);
             return '<div class="result-image' + (img.name.match(/_upscayl\d+k/) ? ' upscaled' : '') + '">' +
-                '<img src="/api/output/image/' + encodeURIComponent(img.name) + '" alt="' + img.name + '" onclick="showLightbox(this.src)" loading="lazy">' +
+                '<img src="/api/output/image/' + encodeURIComponent(img.name) + '" alt="' + img.name + '" onclick="showLightbox(\'' + imgFullRes + '\')" loading="lazy">' +
                 '<div class="result-meta"><span>' + (img.name.match(/_upscayl\d+k/) ? '<span class="upscale-badge">UPSCALED</span> ' : '') + img.name + ' &middot; ' + img.size_kb + ' KB</span>' + upBtn + '</div>' +
                 '</div>';
         }).join('');
@@ -757,8 +759,9 @@ async function upscaleImage(btn, path) {
         var resultDiv = btn.closest('.result-image');
         var upscaledDiv = document.createElement('div');
         upscaledDiv.className = 'result-image upscaled';
+        var upscaleFullRes = '/api/image?path=' + encodeURIComponent(data.saved_to);
         upscaledDiv.innerHTML =
-            '<img src="' + data.data_url + '" alt="' + data.filename + '" onclick="showLightbox(this.src)">' +
+            '<img src="' + data.data_url + '" alt="' + data.filename + '" onclick="showLightbox(\'' + upscaleFullRes + '\')">' +
             '<div class="result-meta"><span class="upscale-badge">UPSCALED</span> ' + data.filename + ' &middot; ' + data.size_kb + ' KB &middot; ' + data.elapsed + 's (' + data.model + ')</div>';
         resultDiv.parentNode.insertBefore(upscaledDiv, resultDiv.nextSibling);
 

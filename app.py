@@ -699,6 +699,15 @@ async def api_get_output_image(filename: str):
     return FileResponse(path)
 
 
+@app.get("/api/image")
+async def api_serve_image(path: str = ""):
+    """Serve an image by absolute path (for lightbox full-res view)."""
+    p = Path(path)
+    if not p.exists() or p.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+        return JSONResponse({"error": "Nicht gefunden"}, status_code=404)
+    return FileResponse(p)
+
+
 # --- Registry ---
 
 def _add_to_registry(datei, titel, prompt, ref_paths_categorized, temperature, refs_count):

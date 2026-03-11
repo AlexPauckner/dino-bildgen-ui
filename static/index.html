@@ -45,6 +45,17 @@
                 </div>
             </div>
 
+            <!-- Input Image / Ref Description -->
+            <div class="block-card" data-block="ref_description">
+                <div class="block-header" onclick="toggleBlock(this)">
+                    <span class="block-title">Input Image</span>
+                    <span class="block-meta" data-counter></span>
+                </div>
+                <div class="block-body">
+                    <textarea data-field="ref_description" oninput="updatePreview()" placeholder="Beschreibung der Referenzbilder für NB2:&#10;z.B. 'I am giving you TWO reference images with DIFFERENT roles:&#10;IMAGE 1 (first image) is the LAYOUT AND CHARACTER REFERENCE...&#10;IMAGE 2 (second image) is the PAINT TEXTURE AND STYLE REFERENCE...'"></textarea>
+                </div>
+            </div>
+
             <!-- Scene -->
             <div class="block-card scene" data-block="scene">
                 <div class="block-header" onclick="toggleBlock(this)">
@@ -142,11 +153,7 @@
                     </div>
                 </div>
             </div>
-            <!-- Ref Description -->
-            <div class="ref-description-wrap">
-                <textarea id="refDescription" data-field="ref_description" oninput="updatePreview(); autoSave()" placeholder="Ref-Beschreibung für NB2: Was soll aus den Bildern übernommen werden?&#10;z.B. 'Image 1 = style reference for oil paint texture. Image 2 = character reference — keep exact proportions and markings.'"></textarea>
             </div>
-        </div>
 
         <!-- Ref Suggestions -->
         <div class="panel-section" id="suggestionsSection" style="display:none">

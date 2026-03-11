@@ -1,7 +1,7 @@
 // Dino-Bildgen-UI V3 — Frontend Logic
 // 5-Block-Schema + 3 Ref-Kategorien
 
-const FIELDS = ['style', 'scene', 'character', 'composition', 'negative'];
+const FIELDS = ['style', 'ref_description', 'scene', 'character', 'composition', 'negative'];
 
 // Legacy field mapping (V1/V2 → V3)
 const LEGACY_MAP = {
@@ -114,6 +114,8 @@ function getBlocks() {
 function buildPrompt(blocks) {
     var parts = [];
     for (var i = 0; i < FIELDS.length; i++) {
+        // ref_description goes separately to the API, not into the prompt text
+        if (FIELDS[i] === 'ref_description') continue;
         if (blocks[FIELDS[i]]) parts.push(blocks[FIELDS[i]]);
     }
     return parts.join('\n\n');
@@ -123,7 +125,8 @@ function updatePreview() {
     var blocks = getBlocks();
     var prompt = buildPrompt(blocks);
 
-    var refDesc = document.getElementById('refDescription').value.trim();
+    var refDescEl = document.querySelector('textarea[data-field="ref_description"]');
+    var refDesc = refDescEl ? refDescEl.value.trim() : '';
     var fullPreview = refDesc ? '[REF DESCRIPTION]\n' + refDesc + '\n\n' + prompt : prompt;
     document.getElementById('promptPreview').textContent = fullPreview;
     document.getElementById('totalChars').textContent = fullPreview.length.toLocaleString();
@@ -374,7 +377,7 @@ async function generate() {
                 refs_style: refPaths.style,
                 refs_character: refPaths.character,
                 refs_scribble: refPaths.scribble,
-                ref_description: document.getElementById('refDescription').value,
+                ref_description: blocks.ref_description || '',
                 context_prefix: contextChecked,
                 temperature: parseFloat(document.getElementById('temperature').value),
                 variants: parseInt(document.getElementById('variants').value),
@@ -547,7 +550,11 @@ async function loadFromRegistry(index) {
         if (data.output_name) {
             document.getElementById('outputName').value = data.output_name;
         }
-        document.getElementById('refDescription').value = data.ref_description || '';
+        // ref_description from registry → into block field
+        if (data.ref_description) {
+            var rdTa = document.querySelector('textarea[data-field="ref_description"]');
+            if (rdTa) { rdTa.value = data.ref_description; autoResize(rdTa); }
+        }
 
         // Show original image
         var resultsContainer = document.getElementById('resultsContainer');
@@ -628,7 +635,6 @@ function autoSave() {
         temperature: document.getElementById('temperature').value,
         variants: document.getElementById('variants').value,
         outputDir: document.getElementById('outputDirInput').value,
-        refDescription: document.getElementById('refDescription').value,
         contextPrefix: document.getElementById('contextPrefix').checked,
         aspectRatio: document.getElementById('aspectRatio').value,
         imageSize: document.getElementById('imageSize').value,
@@ -689,7 +695,6 @@ function autoRestore() {
         if (data.contextPrefix !== undefined) {
             document.getElementById('contextPrefix').checked = data.contextPrefix;
         }
-        if (data.refDescription) document.getElementById('refDescription').value = data.refDescription;
         if (data.aspectRatio) document.getElementById('aspectRatio').value = data.aspectRatio;
         if (data.imageSize) document.getElementById('imageSize').value = data.imageSize;
         if (data.thinkingLevel) document.getElementById('thinkingLevel').value = data.thinkingLevel;

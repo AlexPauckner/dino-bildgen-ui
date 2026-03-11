@@ -195,6 +195,31 @@
         <label>Varianten</label>
         <input type="number" id="variants" min="1" max="5" value="1">
 
+        <label>Ratio</label>
+        <select id="aspectRatio" class="select-small">
+            <option value="">Auto</option>
+            <option value="1:1">1:1</option>
+            <option value="3:4" selected>3:4</option>
+            <option value="4:3">4:3</option>
+            <option value="9:16">9:16</option>
+            <option value="16:9">16:9</option>
+        </select>
+
+        <label>Größe</label>
+        <select id="imageSize" class="select-small">
+            <option value="">Standard</option>
+            <option value="1K">1K</option>
+            <option value="2K">2K</option>
+        </select>
+
+        <label>Thinking</label>
+        <select id="thinkingLevel" class="select-small">
+            <option value="">Aus</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+        </select>
+
         <label class="context-toggle" title="Kinderbuch-Kontext-Prefix voranstellen">
             <input type="checkbox" id="contextPrefix" checked>
             <span>Kinderbuch</span>

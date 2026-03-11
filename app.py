@@ -389,6 +389,9 @@ async def api_generate(request: Request):
     variants = int(body.get("variants", 1))
     output_name = body.get("output_name", "generated")
     context_prefix = body.get("context_prefix", False)
+    aspect_ratio = body.get("aspect_ratio", "")
+    image_size = body.get("image_size", "")
+    thinking_level = body.get("thinking_level", "")
 
     if not prompt_text:
         return JSONResponse({"error": "Kein Prompt angegeben"}, status_code=400)
@@ -480,13 +483,36 @@ async def api_generate(request: Request):
     for i in range(variants):
         try:
             start = time.time()
+            # Build config
+            config_kwargs = {
+                "response_modalities": ["image", "text"],
+                "temperature": temperature,
+            }
+            if aspect_ratio:
+                config_kwargs["image_config"] = types.ImageConfig(
+                    aspect_ratio=aspect_ratio,
+                )
+            if image_size:
+                ic = config_kwargs.get("image_config")
+                if ic:
+                    # ImageConfig already set — rebuild with both
+                    config_kwargs["image_config"] = types.ImageConfig(
+                        aspect_ratio=aspect_ratio,
+                        image_size=image_size,
+                    )
+                else:
+                    config_kwargs["image_config"] = types.ImageConfig(
+                        image_size=image_size,
+                    )
+            if thinking_level:
+                config_kwargs["thinking_config"] = types.ThinkingConfig(
+                    thinking_level=thinking_level,
+                )
+
             response = client.models.generate_content(
                 model="gemini-3.1-flash-image-preview",
                 contents=contents,
-                config=types.GenerateContentConfig(
-                    response_modalities=["image", "text"],
-                    temperature=temperature,
-                ),
+                config=types.GenerateContentConfig(**config_kwargs),
             )
             elapsed = time.time() - start
 

@@ -289,6 +289,18 @@ header h1 span { color: var(--accent); }
     font-size: 12px;
 }
 
+.select-small {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    padding: 4px 6px;
+    font-size: 12px;
+    cursor: pointer;
+    outline: none;
+}
+.select-small:focus { border-color: var(--accent); }
+
 .btn {
     padding: 8px 20px;
     border: none;

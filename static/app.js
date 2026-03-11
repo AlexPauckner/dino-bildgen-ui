@@ -373,6 +373,9 @@ async function generate() {
                 temperature: parseFloat(document.getElementById('temperature').value),
                 variants: parseInt(document.getElementById('variants').value),
                 output_name: document.getElementById('outputName').value,
+                aspect_ratio: document.getElementById('aspectRatio').value,
+                image_size: document.getElementById('imageSize').value,
+                thinking_level: document.getElementById('thinkingLevel').value,
             }),
         });
 
@@ -622,6 +625,9 @@ function autoSave() {
         variants: document.getElementById('variants').value,
         outputDir: document.getElementById('outputDirInput').value,
         contextPrefix: document.getElementById('contextPrefix').checked,
+        aspectRatio: document.getElementById('aspectRatio').value,
+        imageSize: document.getElementById('imageSize').value,
+        thinkingLevel: document.getElementById('thinkingLevel').value,
         timestamp: Date.now(),
     };
     localStorage.setItem('dino-bildgen-autosave', JSON.stringify(data));
@@ -678,6 +684,9 @@ function autoRestore() {
         if (data.contextPrefix !== undefined) {
             document.getElementById('contextPrefix').checked = data.contextPrefix;
         }
+        if (data.aspectRatio) document.getElementById('aspectRatio').value = data.aspectRatio;
+        if (data.imageSize) document.getElementById('imageSize').value = data.imageSize;
+        if (data.thinkingLevel) document.getElementById('thinkingLevel').value = data.thinkingLevel;
 
         // Restore refs
         if (data.refs_style) refs.style = data.refs_style;

@@ -35,6 +35,10 @@ DINO_BUCH_DIR = Path(os.path.expanduser(
 ))
 KINDERBUCH_BASE = DINO_BUCH_DIR.parent
 
+# Upscayl config
+UPSCAYL_BIN = Path("/Applications/Upscayl.app/Contents/Resources/bin/upscayl-bin")
+UPSCAYL_MODELS = Path("/Applications/Upscayl.app/Contents/Resources/models")
+
 # Runtime state
 state = {
     "ref_dir": str(DEFAULT_REF_DIR),
@@ -605,6 +609,85 @@ async def api_list_output_images():
                 "mtime": f.stat().st_mtime,
             })
     return JSONResponse({"images": images[:20], "dir": str(output_dir)})
+
+
+@app.get("/api/upscayl/status")
+async def api_upscayl_status():
+    """Check if Upscayl CLI is available."""
+    available = UPSCAYL_BIN.exists() and UPSCAYL_MODELS.exists()
+    return JSONResponse({"available": available})
+
+
+@app.post("/api/upscale")
+async def api_upscale(request: Request):
+    """Upscale an image using Upscayl CLI."""
+    body = await request.json()
+    input_path = body.get("path", "")
+    model = body.get("model", "high-fidelity-4x")
+    scale = int(body.get("scale", 2))
+
+    if not input_path:
+        return JSONResponse({"error": "Kein Bildpfad angegeben"}, status_code=400)
+
+    src = Path(input_path)
+    if not src.exists():
+        return JSONResponse({"error": "Datei nicht gefunden: %s" % input_path}, status_code=404)
+
+    if not UPSCAYL_BIN.exists():
+        return JSONResponse({"error": "Upscayl nicht installiert"}, status_code=500)
+
+    # Build output filename: original_upscayl2k.png
+    suffix = "_upscayl%dk" % scale
+    out_name = src.stem + suffix + ".png"
+    out_path = src.parent / out_name
+    counter = 2
+    while out_path.exists():
+        out_name = src.stem + suffix + "_%d.png" % counter
+        out_path = src.parent / out_name
+        counter += 1
+
+    try:
+        start = time.time()
+        result = subprocess.run(
+            [
+                str(UPSCAYL_BIN),
+                "-i", str(src),
+                "-o", str(out_path),
+                "-m", str(UPSCAYL_MODELS),
+                "-n", model,
+                "-s", str(scale),
+                "-f", "png",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        elapsed = time.time() - start
+
+        if not out_path.exists():
+            return JSONResponse({
+                "error": "Upscayl hat kein Bild erzeugt",
+                "stderr": result.stderr[-500:] if result.stderr else "",
+            }, status_code=500)
+
+        # Read upscaled image for preview
+        data = out_path.read_bytes()
+        img_b64 = base64.b64encode(data).decode()
+
+        return JSONResponse({
+            "ok": True,
+            "filename": out_name,
+            "saved_to": str(out_path),
+            "size_kb": len(data) // 1024,
+            "elapsed": round(elapsed, 1),
+            "data_url": "data:image/png;base64,%s" % img_b64,
+            "model": model,
+            "scale": scale,
+        })
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "Upscayl Timeout (>120s)"}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"error": "Upscayl Fehler: %s" % str(e)}, status_code=500)
 
 
 @app.get("/api/output/image/{filename}")

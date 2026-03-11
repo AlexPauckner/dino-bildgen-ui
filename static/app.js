@@ -14,6 +14,9 @@ const LEGACY_MAP = {
     negative_block: 'negative',
 };
 
+// --- Upscayl availability ---
+let upscaylAvailable = false;
+
 // --- Ref State (3 categories) ---
 let refs = {
     style: [],      // [{name, path, data_url, size_kb, reason?, score?, registry_index?}]
@@ -397,9 +400,12 @@ async function generate() {
             for (var pi = 0; pi < result.parts.length; pi++) {
                 var part = result.parts[pi];
                 if (part.type === 'image') {
+                    var upscaleBtn = upscaylAvailable
+                        ? '<button class="btn btn-secondary btn-small upscale-btn" onclick="upscaleImage(this, \'' + part.saved_to.replace(/'/g, "\\'") + '\')">Upscale 2K</button>'
+                        : '';
                     resultsContainer.innerHTML += '<div class="result-image">' +
                         '<img src="' + part.data_url + '" alt="' + part.filename + '" onclick="showLightbox(this.src)">' +
-                        '<div class="result-meta">' + part.filename + ' &middot; ' + part.size_kb + ' KB &middot; ' + result.elapsed + 's</div>' +
+                        '<div class="result-meta"><span>' + part.filename + ' &middot; ' + part.size_kb + ' KB &middot; ' + result.elapsed + 's</span>' + upscaleBtn + '</div>' +
                         '</div>';
                 } else if (part.type === 'text') {
                     resultsContainer.innerHTML += '<div style="padding:8px;font-size:11px;color:var(--text-dim);border-bottom:1px solid var(--border)">' + part.content + '</div>';
@@ -432,9 +438,12 @@ async function loadOutputImages() {
         }
 
         container.innerHTML = data.images.map(function(img) {
-            return '<div class="result-image">' +
+            var upBtn = upscaylAvailable && !img.name.match(/_upscayl\d+k/)
+                ? '<button class="btn btn-secondary btn-small upscale-btn" onclick="upscaleImage(this, \'' + img.path.replace(/'/g, "\\'") + '\')">Upscale 2K</button>'
+                : '';
+            return '<div class="result-image' + (img.name.match(/_upscayl\d+k/) ? ' upscaled' : '') + '">' +
                 '<img src="/api/output/image/' + encodeURIComponent(img.name) + '" alt="' + img.name + '" onclick="showLightbox(this.src)" loading="lazy">' +
-                '<div class="result-meta">' + img.name + ' &middot; ' + img.size_kb + ' KB</div>' +
+                '<div class="result-meta"><span>' + (img.name.match(/_upscayl\d+k/) ? '<span class="upscale-badge">UPSCALED</span> ' : '') + img.name + ' &middot; ' + img.size_kb + ' KB</span>' + upBtn + '</div>' +
                 '</div>';
         }).join('');
     } catch (e) {
@@ -708,8 +717,65 @@ function autoRestore() {
 document.addEventListener('input', function() { autoSave(); });
 
 
+// --- Upscayl ---
+
+async function checkUpscayl() {
+    try {
+        var resp = await fetch('/api/upscayl/status');
+        var data = await resp.json();
+        upscaylAvailable = data.available;
+    } catch (e) {
+        upscaylAvailable = false;
+    }
+}
+
+async function upscaleImage(btn, path) {
+    var originalText = btn.textContent;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Upscaling...';
+
+    try {
+        var resp = await fetch('/api/upscale', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                path: path,
+                model: 'high-fidelity-4x',
+                scale: 2,
+            }),
+        });
+        var data = await resp.json();
+
+        if (data.error) {
+            toast('Upscale Fehler: ' + data.error, 'error');
+            btn.disabled = false;
+            btn.textContent = originalText;
+            return;
+        }
+
+        // Insert upscaled image after current result
+        var resultDiv = btn.closest('.result-image');
+        var upscaledDiv = document.createElement('div');
+        upscaledDiv.className = 'result-image upscaled';
+        upscaledDiv.innerHTML =
+            '<img src="' + data.data_url + '" alt="' + data.filename + '" onclick="showLightbox(this.src)">' +
+            '<div class="result-meta"><span class="upscale-badge">UPSCALED</span> ' + data.filename + ' &middot; ' + data.size_kb + ' KB &middot; ' + data.elapsed + 's (' + data.model + ')</div>';
+        resultDiv.parentNode.insertBefore(upscaledDiv, resultDiv.nextSibling);
+
+        btn.textContent = 'Done';
+        btn.disabled = true;
+        toast('Upscaled: ' + data.filename, 'success');
+    } catch (e) {
+        toast('Upscale Fehler: ' + e.message, 'error');
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+
 // --- Init ---
 
+checkUpscayl();
 updatePreview();
 renderAllRefs();
 

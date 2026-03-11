@@ -492,6 +492,28 @@ header h1 span { color: var(--accent); }
     font-size: 10px;
     color: var(--text-dim);
 }
+.ref-description-wrap {
+    padding: 4px 8px 8px;
+}
+.ref-description-wrap textarea {
+    width: 100%;
+    min-height: 60px;
+    padding: 8px 10px;
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    resize: vertical;
+    outline: none;
+}
+.ref-description-wrap textarea:focus {
+    border-color: var(--accent);
+    background: #111833;
+}
+
 .ref-total {
     display: inline-block;
     min-width: 20px;

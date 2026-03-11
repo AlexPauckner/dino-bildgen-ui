@@ -393,6 +393,7 @@ async def api_generate(request: Request):
     variants = int(body.get("variants", 1))
     output_name = body.get("output_name", "generated")
     context_prefix = body.get("context_prefix", False)
+    ref_description = body.get("ref_description", "").strip()
     aspect_ratio = body.get("aspect_ratio", "")
     image_size = body.get("image_size", "")
     thinking_level = body.get("thinking_level", "")
@@ -455,15 +456,21 @@ async def api_generate(request: Request):
 
         # Build role-based contents
         contents = []
-        if style_refs:
-            contents.append(REF_INSTRUCTIONS["style"])
-            contents.extend(style_refs)
-        if char_refs:
-            contents.append(REF_INSTRUCTIONS["character"])
-            contents.extend(char_refs)
-        if scribble_refs:
-            contents.append(REF_INSTRUCTIONS["scribble"])
-            contents.extend(scribble_refs)
+        all_refs = style_refs + char_refs + scribble_refs
+        if ref_description and all_refs:
+            # Custom ref description overrides auto-instructions
+            contents.append(ref_description)
+            contents.extend(all_refs)
+        else:
+            if style_refs:
+                contents.append(REF_INSTRUCTIONS["style"])
+                contents.extend(style_refs)
+            if char_refs:
+                contents.append(REF_INSTRUCTIONS["character"])
+                contents.extend(char_refs)
+            if scribble_refs:
+                contents.append(REF_INSTRUCTIONS["scribble"])
+                contents.extend(scribble_refs)
 
         # Build generation prompt (context + identity lock are generation-time only)
         gen_prompt = prompt_text
@@ -570,6 +577,7 @@ async def api_generate(request: Request):
                     titel=output_name,
                     prompt=prompt_text,  # Pure prompt without context/identity lock
                     ref_paths_categorized=ref_paths_for_registry,
+                    ref_description=ref_description,
                     temperature=temperature,
                     refs_count=total_refs,
                 )
@@ -710,7 +718,7 @@ async def api_serve_image(path: str = ""):
 
 # --- Registry ---
 
-def _add_to_registry(datei, titel, prompt, ref_paths_categorized, temperature, refs_count):
+def _add_to_registry(datei, titel, prompt, ref_paths_categorized, temperature, refs_count, ref_description=""):
     # type: (str, str, str, object, float, int) -> None
     """Add a generated image to look-registry.json (V3: categorized refs)."""
     try:
@@ -751,6 +759,7 @@ def _add_to_registry(datei, titel, prompt, ref_paths_categorized, temperature, r
         "bewertung": "",
         "session": str(date.today()),
         "notiz": "Via Bildgen-UI V3 generiert",
+        "ref_description": ref_description,
         "referenzbilder": rel_refs,
     }
     data["bilder"].append(entry)
@@ -952,6 +961,7 @@ async def api_load_registry(index: int):
         "bewertung": entry.get("bewertung", ""),
         "notiz": entry.get("notiz", ""),
         "prompt": prompt,
+        "ref_description": entry.get("ref_description", ""),
         "blocks": blocks,
         "original_image": original_image,
         "ref_images": ref_images,

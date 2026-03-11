@@ -123,8 +123,10 @@ function updatePreview() {
     var blocks = getBlocks();
     var prompt = buildPrompt(blocks);
 
-    document.getElementById('promptPreview').textContent = prompt;
-    document.getElementById('totalChars').textContent = prompt.length.toLocaleString();
+    var refDesc = document.getElementById('refDescription').value.trim();
+    var fullPreview = refDesc ? '[REF DESCRIPTION]\n' + refDesc + '\n\n' + prompt : prompt;
+    document.getElementById('promptPreview').textContent = fullPreview;
+    document.getElementById('totalChars').textContent = fullPreview.length.toLocaleString();
 
     for (var i = 0; i < FIELDS.length; i++) {
         var field = FIELDS[i];
@@ -372,6 +374,7 @@ async function generate() {
                 refs_style: refPaths.style,
                 refs_character: refPaths.character,
                 refs_scribble: refPaths.scribble,
+                ref_description: document.getElementById('refDescription').value,
                 context_prefix: contextChecked,
                 temperature: parseFloat(document.getElementById('temperature').value),
                 variants: parseInt(document.getElementById('variants').value),
@@ -540,10 +543,11 @@ async function loadFromRegistry(index) {
             }
         }
 
-        // Set output name
+        // Set output name + ref description
         if (data.output_name) {
             document.getElementById('outputName').value = data.output_name;
         }
+        document.getElementById('refDescription').value = data.ref_description || '';
 
         // Show original image
         var resultsContainer = document.getElementById('resultsContainer');
@@ -624,6 +628,7 @@ function autoSave() {
         temperature: document.getElementById('temperature').value,
         variants: document.getElementById('variants').value,
         outputDir: document.getElementById('outputDirInput').value,
+        refDescription: document.getElementById('refDescription').value,
         contextPrefix: document.getElementById('contextPrefix').checked,
         aspectRatio: document.getElementById('aspectRatio').value,
         imageSize: document.getElementById('imageSize').value,
@@ -684,6 +689,7 @@ function autoRestore() {
         if (data.contextPrefix !== undefined) {
             document.getElementById('contextPrefix').checked = data.contextPrefix;
         }
+        if (data.refDescription) document.getElementById('refDescription').value = data.refDescription;
         if (data.aspectRatio) document.getElementById('aspectRatio').value = data.aspectRatio;
         if (data.imageSize) document.getElementById('imageSize').value = data.imageSize;
         if (data.thinkingLevel) document.getElementById('thinkingLevel').value = data.thinkingLevel;

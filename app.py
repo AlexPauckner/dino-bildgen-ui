@@ -166,12 +166,14 @@ def parse_script(source):
 
 def split_prompt_into_blocks(prompt):
     # type: (str) -> dict
-    """Split a prompt into 5 named blocks using keyword + legacy detection.
+    """Split a prompt into 5 named blocks + ref_description using keyword + legacy detection.
 
     Primary: STYLE:/SCENE:/CHARACTER:/COMPOSITION:/NEGATIVE: keywords.
+    Ref description: "I am giving you ... reference images" / "IMAGE N —" patterns.
     Legacy: Oil paint.../Child proportions.../Brush stroke guide:/Medium:/No photorealism...
     """
-    block_lines = {k: [] for k in BLOCK_KEYS}
+    all_keys = BLOCK_KEYS + ["ref_description"]
+    block_lines = {k: [] for k in all_keys}
     lines = prompt.strip().split('\n')
     current_block = None
 
@@ -182,7 +184,7 @@ def split_prompt_into_blocks(prompt):
         # Primary V3 keywords
         if re.match(r'^STYLE:', stripped):
             detected = "style"
-        elif re.match(r'^SCENE:', stripped):
+        elif re.match(r'^SCENE( INSTRUCTIONS)?:', stripped):
             detected = "scene"
         elif re.match(r'^CHARACTER:', stripped):
             detected = "character"
@@ -190,6 +192,17 @@ def split_prompt_into_blocks(prompt):
             detected = "composition"
         elif re.match(r'^(NEGATIVE|CONSTRAINTS):', stripped):
             detected = "negative"
+        # Ref description patterns
+        elif re.match(r'^I am giving you .* reference image', stripped, re.IGNORECASE):
+            detected = "ref_description"
+        elif re.match(r'^IMAGE \d+', stripped) and current_block in (None, "ref_description", "scene"):
+            # "IMAGE 1 — LAYOUT REFERENCE" etc. — belongs to ref_description
+            if current_block != "ref_description" and not block_lines["ref_description"]:
+                detected = "ref_description"
+            elif current_block == "ref_description":
+                pass  # stay in ref_description
+        elif re.match(r'^COMBINE both:', stripped, re.IGNORECASE) and current_block == "ref_description":
+            pass  # stays in ref_description
         # Legacy V1/V2 patterns
         elif re.match(r'^(Oil paint|REAL oil paint)', stripped, re.IGNORECASE) and not block_lines["style"]:
             detected = "style"
@@ -214,7 +227,7 @@ def split_prompt_into_blocks(prompt):
         else:
             block_lines["scene"].append(line)
 
-    return {k: '\n'.join(block_lines[k]).strip() for k in BLOCK_KEYS}
+    return {k: '\n'.join(block_lines[k]).strip() for k in all_keys}
 
 
 def build_prompt(blocks):

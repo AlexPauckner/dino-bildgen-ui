@@ -324,10 +324,14 @@ def _parse_registry_refs(refs_raw):
 @app.get("/api/status")
 async def api_status():
     """Health check + mode info."""
+    key = os.environ.get("GEMINI_API_KEY", "")
     return JSONResponse({
         "ok": True,
         "deployed": DEPLOYED,
-        "has_api_key": bool(os.environ.get("GEMINI_API_KEY") or API_KEY_PATH.exists()),
+        "has_api_key": bool(key),
+        "key_len": len(key),
+        "env_deployed": os.environ.get("DEPLOYED", "NOT SET"),
+        "env_port": os.environ.get("PORT", "NOT SET"),
     })
 
 

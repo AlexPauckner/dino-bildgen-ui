@@ -172,7 +172,7 @@
                 <button class="btn btn-secondary btn-small" onclick="openOutputDir()">Im Finder</button>
             </div>
             <div class="dir-input">
-                <input type="text" id="outputDirInput" value="~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/NB2-Neue-Arten" onchange="changeOutputDir(this.value)">
+                <input type="text" id="outputDirInput" value="~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/Assets/Charsheets-Dinos" onchange="changeOutputDir(this.value)">
             </div>
         </div>
 
@@ -221,6 +221,12 @@
             <option value="">Standard</option>
             <option value="1K">1K</option>
             <option value="2K">2K</option>
+        </select>
+
+        <label>Modell</label>
+        <select id="modelSelect" class="select-small">
+            <option value="gemini-3.1-flash-image-preview">NB2</option>
+            <option value="gemini-2.5-flash-preview-image-generation">NB Pro</option>
         </select>
 
         <label>Thinking</label>

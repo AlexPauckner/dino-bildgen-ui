@@ -25,7 +25,7 @@ app = FastAPI()
 API_KEY_PATH = Path(os.path.expanduser("~/.google_api_key"))
 DEFAULT_REF_DIR = Path("/tmp/dino-neue-refs")
 DEFAULT_OUTPUT_DIR = Path(os.path.expanduser(
-    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/NB2-Neue-Arten"
+    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/Assets/Charsheets-Dinos"
 ))
 REGISTRY_PATH = Path(os.path.expanduser(
     "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/look-registry.json"
@@ -168,9 +168,9 @@ def split_prompt_into_blocks(prompt):
     # type: (str) -> dict
     """Split a prompt into 5 named blocks + ref_description using keyword + legacy detection.
 
-    Primary: STYLE:/SCENE:/CHARACTER:/COMPOSITION:/NEGATIVE: keywords.
-    Ref description: "I am giving you ... reference images" / "IMAGE N —" patterns.
-    Legacy: Oil paint.../Child proportions.../Brush stroke guide:/Medium:/No photorealism...
+    Primary: INPUT IMAGES:/STYLE:/SCENE:/CHARACTER:/COMPOSITION:/NEGATIVE: keywords.
+    Legacy ref: "I am giving you ... reference images" / "IMAGE N —" patterns.
+    Legacy style: Oil paint.../Child proportions.../Brush stroke guide:/Medium:/No photorealism...
     """
     all_keys = BLOCK_KEYS + ["ref_description"]
     block_lines = {k: [] for k in all_keys}
@@ -182,7 +182,9 @@ def split_prompt_into_blocks(prompt):
         detected = None
 
         # Primary V3 keywords
-        if re.match(r'^STYLE:', stripped):
+        if re.match(r'^INPUT IMAGES:', stripped, re.IGNORECASE):
+            detected = "ref_description"
+        elif re.match(r'^STYLE:', stripped):
             detected = "style"
         elif re.match(r'^SCENE( INSTRUCTIONS)?:', stripped):
             detected = "scene"
@@ -192,7 +194,7 @@ def split_prompt_into_blocks(prompt):
             detected = "composition"
         elif re.match(r'^(NEGATIVE|CONSTRAINTS):', stripped):
             detected = "negative"
-        # Ref description patterns
+        # Legacy ref description patterns
         elif re.match(r'^I am giving you .* reference image', stripped, re.IGNORECASE):
             detected = "ref_description"
         elif re.match(r'^IMAGE \d+', stripped) and current_block in (None, "ref_description", "scene"):
@@ -358,7 +360,7 @@ async def api_upload_ref(file: UploadFile = File(...)):
     dest = ref_dir / file.filename
     content = await file.read()
     dest.write_bytes(content)
-    return JSONResponse({"ok": True, "name": file.filename})
+    return JSONResponse({"ok": True, "name": file.filename, "path": str(dest)})
 
 
 @app.delete("/api/refs/{filename}")
@@ -407,6 +409,7 @@ async def api_generate(request: Request):
     output_name = body.get("output_name", "generated")
     context_prefix = body.get("context_prefix", False)
     ref_description = body.get("ref_description", "").strip()
+    model = body.get("model", "gemini-3.1-flash-image-preview")
     aspect_ratio = body.get("aspect_ratio", "")
     image_size = body.get("image_size", "")
     thinking_level = body.get("thinking_level", "")
@@ -534,7 +537,7 @@ async def api_generate(request: Request):
                 )
 
             response = client.models.generate_content(
-                model="gemini-3.1-flash-image-preview",
+                model=model,
                 contents=contents,
                 config=types.GenerateContentConfig(**config_kwargs),
             )
@@ -585,14 +588,17 @@ async def api_generate(request: Request):
             continue
         for part_item in result_item.get("parts", []):
             if part_item.get("type") == "image":
+                # Full prompt for registry: ref_description + prompt blocks
+                full_prompt = (ref_description + "\n\n" + prompt_text).strip() if ref_description else prompt_text
                 _add_to_registry(
                     datei=part_item["saved_to"],
                     titel=output_name,
-                    prompt=prompt_text,  # Pure prompt without context/identity lock
+                    prompt=full_prompt,
                     ref_paths_categorized=ref_paths_for_registry,
                     ref_description=ref_description,
                     temperature=temperature,
                     refs_count=total_refs,
+                    model=model,
                 )
     _rebuild_html()
 
@@ -731,8 +737,8 @@ async def api_serve_image(path: str = ""):
 
 # --- Registry ---
 
-def _add_to_registry(datei, titel, prompt, ref_paths_categorized, temperature, refs_count, ref_description=""):
-    # type: (str, str, str, object, float, int) -> None
+def _add_to_registry(datei, titel, prompt, ref_paths_categorized, temperature, refs_count, ref_description="", model="gemini-3.1-flash-image-preview"):
+    # type: (str, str, str, object, float, int, str, str) -> None
     """Add a generated image to look-registry.json (V3: categorized refs)."""
     try:
         data = json.loads(REGISTRY_PATH.read_text())
@@ -766,7 +772,7 @@ def _add_to_registry(datei, titel, prompt, ref_paths_categorized, temperature, r
         "titel": titel,
         "sektion": "Bildgen-UI",
         "tool": "Bildgen-UI",
-        "modell": "gemini-3.1-flash-image-preview",
+        "modell": model,
         "prompt": prompt,
         "parameter": "%d Refs, temp %s" % (refs_count, temperature),
         "bewertung": "",
@@ -917,6 +923,12 @@ async def api_load_registry(index: int):
     # Split prompt into V3 blocks
     blocks = split_prompt_into_blocks(prompt)
 
+    # ref_description: prefer registry field over splitter result
+    # (newer entries store ref_description separately, not inside prompt)
+    registry_rd = entry.get("ref_description", "").strip()
+    if registry_rd:
+        blocks["ref_description"] = registry_rd
+
     # Load original image
     original_image = None
     img_path = DINO_BUCH_DIR / entry.get("datei", "")
@@ -1005,5 +1017,5 @@ async def api_registry_image(index: int):
 if __name__ == "__main__":
     import uvicorn
     print("\n  Dino-Bildgen-UI V3")
-    print("  http://localhost:8080\n")
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    print("  http://localhost:8899\n")
+    uvicorn.run(app, host="0.0.0.0", port=8899)

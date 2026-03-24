@@ -193,7 +193,7 @@ function renderRefCategory(role) {
 
     grid.innerHTML = items.map(function(img, i) {
         var reason = img.reason ? '<span class="ref-reason">' + img.reason + '</span>' : '';
-        var src = img.data_url || ('/api/registry/image/' + img.registry_index);
+        var src = img.data_url || (img.path ? '/api/image?path=' + encodeURIComponent(img.path) : '/api/registry/image/' + img.registry_index);
         return '<div class="ref-thumb active-ref" title="' + img.name + (img.reason ? ' \u2014 ' + img.reason : '') + '">' +
             '<img src="' + src + '" alt="' + img.name + '" onclick="showLightbox(this.src)">' +
             '<button class="ref-delete" onclick="removeRef(\'' + role + '\', ' + i + ')">&times;</button>' +
@@ -231,16 +231,30 @@ function uploadRefsToCategory(role, files) {
         (function(file) {
             var reader = new FileReader();
             reader.onload = function() {
-                addRef(role, {
-                    name: file.name,
-                    path: '',  // Uploaded files don't have a server path yet
-                    data_url: reader.result,
-                    size_kb: Math.round(file.size / 1024),
-                });
-                // Also upload to server ref dir
+                var dataUrl = reader.result;
+                var sizeKb = Math.round(file.size / 1024);
+                // Upload to server first, then add ref with server path
                 var formData = new FormData();
                 formData.append('file', file);
-                fetch('/api/refs/upload', { method: 'POST', body: formData });
+                fetch('/api/refs/upload', { method: 'POST', body: formData })
+                    .then(function(resp) { return resp.json(); })
+                    .then(function(data) {
+                        addRef(role, {
+                            name: file.name,
+                            path: data.path || '',
+                            data_url: dataUrl,
+                            size_kb: sizeKb,
+                        });
+                    })
+                    .catch(function() {
+                        // Fallback: add without server path
+                        addRef(role, {
+                            name: file.name,
+                            path: '',
+                            data_url: dataUrl,
+                            size_kb: sizeKb,
+                        });
+                    });
             };
             reader.readAsDataURL(file);
         })(files[i]);
@@ -385,6 +399,7 @@ async function generate() {
                 aspect_ratio: document.getElementById('aspectRatio').value,
                 image_size: document.getElementById('imageSize').value,
                 thinking_level: document.getElementById('thinkingLevel').value,
+                model: document.getElementById('modelSelect').value,
             }),
         });
 
@@ -624,13 +639,26 @@ window.addEventListener('hashchange', checkHashRoute);
 
 // --- Auto-Save (localStorage) ---
 
+function stripDataUrls(refList) {
+    // Strip base64 data_urls to avoid localStorage quota overflow
+    return refList.map(function(r) {
+        var slim = { name: r.name, size_kb: r.size_kb };
+        if (r.path) slim.path = r.path;
+        if (r.registry_index !== undefined) slim.registry_index = r.registry_index;
+        if (r.reason) slim.reason = r.reason;
+        if (r.score !== undefined) slim.score = r.score;
+        if (r.suggested_role) slim.suggested_role = r.suggested_role;
+        return slim;
+    });
+}
+
 function autoSave() {
     var data = {
         version: 3,
         blocks: getBlocks(),
-        refs_style: refs.style,
-        refs_character: refs.character,
-        refs_scribble: refs.scribble,
+        refs_style: stripDataUrls(refs.style),
+        refs_character: stripDataUrls(refs.character),
+        refs_scribble: stripDataUrls(refs.scribble),
         outputName: document.getElementById('outputName').value,
         temperature: document.getElementById('temperature').value,
         variants: document.getElementById('variants').value,
@@ -639,6 +667,7 @@ function autoSave() {
         aspectRatio: document.getElementById('aspectRatio').value,
         imageSize: document.getElementById('imageSize').value,
         thinkingLevel: document.getElementById('thinkingLevel').value,
+        modelSelect: document.getElementById('modelSelect').value,
         timestamp: Date.now(),
     };
     localStorage.setItem('dino-bildgen-autosave', JSON.stringify(data));
@@ -698,6 +727,7 @@ function autoRestore() {
         if (data.aspectRatio) document.getElementById('aspectRatio').value = data.aspectRatio;
         if (data.imageSize) document.getElementById('imageSize').value = data.imageSize;
         if (data.thinkingLevel) document.getElementById('thinkingLevel').value = data.thinkingLevel;
+        if (data.modelSelect) document.getElementById('modelSelect').value = data.modelSelect;
 
         // Restore refs
         if (data.refs_style) refs.style = data.refs_style;
@@ -715,8 +745,9 @@ function autoRestore() {
     }
 }
 
-// Save on every edit
+// Save on every edit (input for text/range, change for selects/checkboxes)
 document.addEventListener('input', function() { autoSave(); });
+document.addEventListener('change', function() { autoSave(); });
 
 
 // --- Upscayl ---

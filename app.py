@@ -25,7 +25,7 @@ app = FastAPI()
 API_KEY_PATH = Path(os.path.expanduser("~/.google_api_key"))
 DEFAULT_REF_DIR = Path("/tmp/dino-neue-refs")
 DEFAULT_OUTPUT_DIR = Path(os.path.expanduser(
-    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/Assets/Charsheets-Dinos"
+    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/Charsheets-Dinos"
 ))
 REGISTRY_PATH = Path(os.path.expanduser(
     "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/look-registry.json"

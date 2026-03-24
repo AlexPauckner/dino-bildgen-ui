@@ -21,21 +21,31 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
 
+# --- Deploy Mode ---
+DEPLOYED = os.environ.get("DEPLOYED", "").lower() in ("true", "1", "yes")
+
+
 # --- Config ---
 API_KEY_PATH = Path(os.path.expanduser("~/.google_api_key"))
 DEFAULT_REF_DIR = Path("/tmp/dino-neue-refs")
-DEFAULT_OUTPUT_DIR = Path(os.path.expanduser(
-    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/Charsheets-Dinos"
-))
-REGISTRY_PATH = Path(os.path.expanduser(
-    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/look-registry.json"
-))
-DINO_BUCH_DIR = Path(os.path.expanduser(
-    "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch"
-))
-KINDERBUCH_BASE = DINO_BUCH_DIR.parent
+if DEPLOYED:
+    DEFAULT_OUTPUT_DIR = Path("/tmp/dino-output")
+    REGISTRY_PATH = Path("/dev/null")
+    DINO_BUCH_DIR = Path("/tmp/dino-buch")
+    KINDERBUCH_BASE = Path("/tmp")
+else:
+    DEFAULT_OUTPUT_DIR = Path(os.path.expanduser(
+        "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/Charsheets-Dinos"
+    ))
+    REGISTRY_PATH = Path(os.path.expanduser(
+        "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch/look-registry.json"
+    ))
+    DINO_BUCH_DIR = Path(os.path.expanduser(
+        "~/Kinderbuch/Comic_Projekt_2025/Dino-Buch"
+    ))
+    KINDERBUCH_BASE = DINO_BUCH_DIR.parent
 
-# Upscayl config
+# Upscayl config (local only)
 UPSCAYL_BIN = Path("/Applications/Upscayl.app/Contents/Resources/bin/upscayl-bin")
 UPSCAYL_MODELS = Path("/Applications/Upscayl.app/Contents/Resources/models")
 
@@ -45,6 +55,14 @@ state = {
     "output_dir": str(DEFAULT_OUTPUT_DIR),
     "ref_paths": [],
 }
+
+
+@app.on_event("startup")
+async def startup_dirs():
+    """Ensure working directories exist."""
+    DEFAULT_REF_DIR.mkdir(parents=True, exist_ok=True)
+    Path(state["output_dir"]).mkdir(parents=True, exist_ok=True)
+
 
 # --- V3 Block Schema ---
 BLOCK_KEYS = ["style", "scene", "character", "composition", "negative"]
@@ -303,6 +321,16 @@ def _parse_registry_refs(refs_raw):
 
 # --- API Endpoints ---
 
+@app.get("/api/status")
+async def api_status():
+    """Health check + mode info."""
+    return JSONResponse({
+        "ok": True,
+        "deployed": DEPLOYED,
+        "has_api_key": bool(os.environ.get("GEMINI_API_KEY") or API_KEY_PATH.exists()),
+    })
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return FileResponse(Path(__file__).parent / "static" / "index.html")
@@ -417,9 +445,11 @@ async def api_generate(request: Request):
     if not prompt_text:
         return JSONResponse({"error": "Kein Prompt angegeben"}, status_code=400)
 
-    if not API_KEY_PATH.exists():
-        return JSONResponse({"error": "API Key nicht gefunden: %s" % API_KEY_PATH}, status_code=500)
-    api_key = API_KEY_PATH.read_text().strip()
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key and API_KEY_PATH.exists():
+        api_key = API_KEY_PATH.read_text().strip()
+    if not api_key:
+        return JSONResponse({"error": "API Key nicht konfiguriert (GEMINI_API_KEY env var oder ~/.google_api_key)"}, status_code=500)
 
     from google import genai
     from google.genai import types
@@ -582,25 +612,25 @@ async def api_generate(request: Request):
         if i < variants - 1:
             time.sleep(16)
 
-    # Add to registry + rebuild HTML
-    for result_item in results:
-        if "error" in result_item:
-            continue
-        for part_item in result_item.get("parts", []):
-            if part_item.get("type") == "image":
-                # Full prompt for registry: ref_description + prompt blocks
-                full_prompt = (ref_description + "\n\n" + prompt_text).strip() if ref_description else prompt_text
-                _add_to_registry(
-                    datei=part_item["saved_to"],
-                    titel=output_name,
-                    prompt=full_prompt,
-                    ref_paths_categorized=ref_paths_for_registry,
-                    ref_description=ref_description,
-                    temperature=temperature,
-                    refs_count=total_refs,
-                    model=model,
-                )
-    _rebuild_html()
+    # Add to registry + rebuild HTML (local only)
+    if not DEPLOYED:
+        for result_item in results:
+            if "error" in result_item:
+                continue
+            for part_item in result_item.get("parts", []):
+                if part_item.get("type") == "image":
+                    full_prompt = (ref_description + "\n\n" + prompt_text).strip() if ref_description else prompt_text
+                    _add_to_registry(
+                        datei=part_item["saved_to"],
+                        titel=output_name,
+                        prompt=full_prompt,
+                        ref_paths_categorized=ref_paths_for_registry,
+                        ref_description=ref_description,
+                        temperature=temperature,
+                        refs_count=total_refs,
+                        model=model,
+                    )
+        _rebuild_html()
 
     return JSONResponse({
         "ok": True,
@@ -612,7 +642,9 @@ async def api_generate(request: Request):
 
 @app.post("/api/output/open")
 async def api_open_output():
-    """Open the output directory in Finder."""
+    """Open the output directory in Finder (local only)."""
+    if DEPLOYED:
+        return JSONResponse({"error": "Nicht verfügbar im Cloud-Modus"}, status_code=400)
     output_dir = Path(state["output_dir"])
     if output_dir.exists():
         subprocess.Popen(["open", str(output_dir)])
@@ -641,6 +673,8 @@ async def api_list_output_images():
 @app.get("/api/upscayl/status")
 async def api_upscayl_status():
     """Check if Upscayl CLI is available."""
+    if DEPLOYED:
+        return JSONResponse({"available": False})
     available = UPSCAYL_BIN.exists() and UPSCAYL_MODELS.exists()
     return JSONResponse({"available": available})
 
@@ -730,6 +764,9 @@ async def api_get_output_image(filename: str):
 async def api_serve_image(path: str = ""):
     """Serve an image by absolute path (for lightbox full-res view)."""
     p = Path(path)
+    # In deployed mode, only serve from /tmp
+    if DEPLOYED and not str(p).startswith("/tmp/"):
+        return JSONResponse({"error": "Zugriff verweigert"}, status_code=403)
     if not p.exists() or p.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
         return JSONResponse({"error": "Nicht gefunden"}, status_code=404)
     return FileResponse(p)
@@ -801,6 +838,8 @@ def _rebuild_html():
 @app.get("/api/registry")
 async def api_list_registry():
     """List all entries in look-registry.json."""
+    if DEPLOYED:
+        return JSONResponse({"entries": [], "total": 0})
     if not REGISTRY_PATH.exists():
         return JSONResponse({"error": "Registry nicht gefunden"}, status_code=404)
     data = json.loads(REGISTRY_PATH.read_text())
@@ -1016,6 +1055,10 @@ async def api_registry_image(index: int):
 
 if __name__ == "__main__":
     import uvicorn
+    port = int(os.environ.get("PORT", 8899))
     print("\n  Dino-Bildgen-UI V3")
-    print("  http://localhost:8899\n")
-    uvicorn.run(app, host="0.0.0.0", port=8899)
+    if DEPLOYED:
+        print("  DEPLOYED MODE — Port %d" % port)
+    else:
+        print("  http://localhost:%d\n" % port)
+    uvicorn.run(app, host="0.0.0.0", port=port)

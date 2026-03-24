@@ -631,6 +631,17 @@ function checkHashRoute() {
         if (!isNaN(index)) {
             loadFromRegistry(index);
         }
+    } else if (hash.indexOf('#prompt:') === 0) {
+        var encoded = hash.substring(8);
+        try {
+            var promptText = decodeURIComponent(encoded);
+            // Load full prompt into scene block — server splits on generate
+            var sceneEl = document.getElementById('block-scene');
+            if (sceneEl) sceneEl.value = promptText;
+            toast('Prompt aus History geladen', 'success');
+        } catch (e) {
+            toast('Prompt-Dekodierung fehlgeschlagen', 'error');
+        }
     }
 }
 
